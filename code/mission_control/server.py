@@ -46,11 +46,12 @@ from typing import Optional
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
-from flask import Flask, render_template_string, jsonify, send_from_directory
+from flask import Flask, render_template_string, jsonify, send_from_directory, request
 from flask_socketio import SocketIO, emit
 
-from mission_control.telemachus_client import TelematicusClient, SimulatedTelemetry
+from mission_control.telemachus_client import TelematicusClient, SimulatedTelemetry, ScriptedTelemetry
 from mission_control.nominal_compare import NominalTrajectory, FlightDirector
+from mission_control.scenario import LaunchScenario, PRESET_SCENARIOS
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)-8s %(name)s — %(message)s")
@@ -73,6 +74,7 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet",
 telemetry_client = None
 flight_director: Optional[FlightDirector] = None
 nominal_traj: Optional[NominalTrajectory] = None
+current_scenario: Optional[LaunchScenario] = None
 EMIT_RATE_HZ = 5    # how often to push to browser (independent of telemetry rate)
 
 
@@ -123,6 +125,124 @@ def api_clear_trajectory():
 
 
 # ---------------------------------------------------------------------------
+# Scenario management routes
+# ---------------------------------------------------------------------------
+
+@app.route("/api/scenarios")
+def api_scenarios():
+    scenarios = []
+    for key, s in PRESET_SCENARIOS.items():
+        scenarios.append({
+            "name": key,
+            "label": s.name,
+            "booster_type": s.booster_type,
+            "n_boosters": s.n_boosters,
+            "booster_pct": s.booster_pct,
+            "pitch_program": s.pitch_program,
+        })
+    return jsonify({"scenarios": scenarios})
+
+
+@app.route("/api/scenario/load", methods=["POST"])
+def api_scenario_load():
+    global telemetry_client, flight_director, nominal_traj, current_scenario
+
+    data = request.get_json(force=True)
+
+    if "preset" in data:
+        scenario = PRESET_SCENARIOS.get(data["preset"])
+        if not scenario:
+            return jsonify({"error": f"Unknown preset: {data['preset']}"}), 400
+    else:
+        scenario = LaunchScenario.from_dict(data)
+        errors = scenario.validate()
+        if errors:
+            return jsonify({"error": "Validation failed", "details": errors}), 400
+
+    if telemetry_client:
+        telemetry_client.stop()
+
+    from sim import run_ascent
+    vehicle_cfg = scenario.to_vehicle_config()
+    pitch_prog = scenario.get_pitch_program()
+    result = run_ascent(vehicle_cfg, pitch_prog)
+    nominal_traj = NominalTrajectory(result.points)
+    flight_director = FlightDirector(nominal_traj)
+
+    scripted = ScriptedTelemetry(rate_ms=200)
+    scripted.load_scenario(scenario)
+    telemetry_client = scripted
+    current_scenario = scenario
+
+    summary = scripted.get_scenario_summary()
+
+    try:
+        socketio.emit("nominal", {"trajectory": nominal_traj.trajectory_for_plot()})
+        socketio.emit("scenario_loaded", {
+            "scenario": scenario.to_dict(),
+            "summary": summary,
+        })
+    except Exception:
+        pass
+
+    return jsonify({"ok": True, "summary": summary})
+
+
+@app.route("/api/scenario/current")
+def api_scenario_current():
+    result = {"scenario": None, "playback": None}
+    if current_scenario:
+        result["scenario"] = current_scenario.to_dict()
+    if isinstance(telemetry_client, ScriptedTelemetry):
+        result["playback"] = telemetry_client.get_playback_status()
+    return jsonify(result)
+
+
+@app.route("/api/scenario/start", methods=["POST"])
+def api_scenario_start():
+    if not isinstance(telemetry_client, ScriptedTelemetry):
+        return jsonify({"error": "No scripted scenario loaded"}), 400
+    telemetry_client.start()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/scenario/pause", methods=["POST"])
+def api_scenario_pause():
+    if not isinstance(telemetry_client, ScriptedTelemetry):
+        return jsonify({"error": "No scripted scenario loaded"}), 400
+    telemetry_client.pause()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/scenario/resume", methods=["POST"])
+def api_scenario_resume():
+    if not isinstance(telemetry_client, ScriptedTelemetry):
+        return jsonify({"error": "No scripted scenario loaded"}), 400
+    telemetry_client.resume()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/scenario/reset", methods=["POST"])
+def api_scenario_reset():
+    if not isinstance(telemetry_client, ScriptedTelemetry):
+        return jsonify({"error": "No scripted scenario loaded"}), 400
+    telemetry_client.reset()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/scenario/speed", methods=["POST"])
+def api_scenario_speed():
+    if not isinstance(telemetry_client, ScriptedTelemetry):
+        return jsonify({"error": "No scripted scenario loaded"}), 400
+    data = request.get_json(force=True)
+    speed = data.get("speed", 1.0)
+    if not (0.25 <= speed <= 10.0):
+        return jsonify({"error": "speed must be 0.25-10.0"}), 400
+    telemetry_client.set_speed(speed)
+    return jsonify({"ok": True, "speed": speed})
+
+
+# ---------------------------------------------------------------------------
 # Socket.IO events
 # ---------------------------------------------------------------------------
 
@@ -164,6 +284,24 @@ def on_clear_trajectory():
         telemetry_client.clear_trajectory()
 
 
+@socketio.on("playback_control")
+def on_playback_control(data):
+    if not isinstance(telemetry_client, ScriptedTelemetry):
+        return
+    action = data.get("action")
+    if action == "start":
+        telemetry_client.start()
+    elif action == "pause":
+        telemetry_client.pause()
+    elif action == "resume":
+        telemetry_client.resume()
+    elif action == "reset":
+        telemetry_client.reset()
+    elif action == "speed":
+        speed = data.get("speed", 1.0)
+        telemetry_client.set_speed(speed)
+
+
 # ---------------------------------------------------------------------------
 # Background emit loop
 # ---------------------------------------------------------------------------
@@ -187,6 +325,10 @@ def broadcast_loop():
                     "trajectory": trajectory[-50:] if trajectory else [],
                 })
                 socketio.emit("director", director_out)
+
+                if isinstance(telemetry_client, ScriptedTelemetry):
+                    socketio.emit("playback_status",
+                                  telemetry_client.get_playback_status())
         except Exception as exc:
             logger.error("Broadcast error: %s", exc, exc_info=True)
             try:
@@ -221,11 +363,14 @@ def build_argparser() -> argparse.ArgumentParser:
                    help="Browser push rate (Hz)")
     p.add_argument("--debug", action="store_true",
                    help="Enable Flask debug output")
+    p.add_argument("--scenario", default=None, metavar="NAME",
+                   help="Start with a preset scenario (e.g., 'nominal', 'steep_ascent'). "
+                        "Implies simulation mode.")
     return p
 
 
 def main(argv=None):
-    global telemetry_client, flight_director, nominal_traj, EMIT_RATE_HZ
+    global telemetry_client, flight_director, nominal_traj, current_scenario, EMIT_RATE_HZ
 
     parser = build_argparser()
     args = parser.parse_args(argv)
@@ -245,7 +390,24 @@ def main(argv=None):
         flight_director = FlightDirector(nominal_traj)
 
     # Start telemetry client
-    if args.ksp_host:
+    if args.scenario:
+        scenario = PRESET_SCENARIOS.get(args.scenario)
+        if not scenario:
+            logger.error("Unknown scenario '%s'. Available: %s",
+                         args.scenario, list(PRESET_SCENARIOS.keys()))
+            sys.exit(1)
+        logger.info("Starting in SCRIPTED mode with scenario '%s'", args.scenario)
+        from sim import run_ascent
+        cfg = scenario.to_vehicle_config()
+        result = run_ascent(cfg, scenario.get_pitch_program())
+        nominal_traj = NominalTrajectory(result.points)
+        flight_director = FlightDirector(nominal_traj)
+        scripted = ScriptedTelemetry(rate_ms=args.rate)
+        scripted.load_scenario(scenario)
+        telemetry_client = scripted
+        current_scenario = scenario
+        telemetry_client.start()
+    elif args.ksp_host:
         logger.info("Connecting to KSP/Telemachus at %s:%d …", args.ksp_host, args.ksp_port)
         telemetry_client = TelematicusClient(
             host=args.ksp_host, port=args.ksp_port, rate_ms=args.rate

@@ -445,3 +445,254 @@ class SimulatedTelemetry:
                     pass
 
             time.sleep(self.rate_ms / 1000.0)
+
+
+class ScriptedTelemetry:
+    """
+    Telemetry source that runs the sim with a user-defined LaunchScenario
+    and plays back with controllable speed, pause, and reset.
+
+    Implements the same interface as TelematicusClient/SimulatedTelemetry:
+      get_state(), get_trajectory(), clear_trajectory(), start(), stop()
+    Plus playback controls:
+      load_scenario(), pause(), resume(), reset(), set_speed()
+    """
+
+    def __init__(self, rate_ms: int = 200):
+        self.rate_ms = rate_ms
+        self._state: dict = dict(EMPTY_STATE)
+        self._state["connected"] = True
+        self._state["scripted"] = True
+        self._trajectory: list = []
+        self._lock = threading.Lock()
+        self._trajectory_lock = threading.Lock()
+        self._thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
+        self.on_update: Optional[Callable[[dict], None]] = None
+
+        self._points: list = []
+        self._scenario = None
+        self._sim_result = None
+        self._vehicle_cfg = None
+
+        self._playback_state = "stopped"
+        self._speed = 1.0
+        self._start_time: Optional[float] = None
+        self._pause_time: Optional[float] = None
+        self._pause_accumulated = 0.0
+
+    def load_scenario(self, scenario) -> dict:
+        from mission_control.scenario import LaunchScenario
+        from sim import run_ascent
+
+        self.stop()
+        self._scenario = scenario
+        self._speed = scenario.playback_speed
+
+        self._vehicle_cfg = scenario.to_vehicle_config()
+        pitch_prog = scenario.get_pitch_program()
+        self._sim_result = run_ascent(self._vehicle_cfg, pitch_prog)
+        self._points = list(self._sim_result.points)
+
+        with self._lock:
+            self._playback_state = "stopped"
+            self._start_time = None
+            self._pause_time = None
+            self._pause_accumulated = 0.0
+            self._state = dict(EMPTY_STATE)
+            self._state["connected"] = True
+            self._state["scripted"] = True
+
+        with self._trajectory_lock:
+            self._trajectory.clear()
+
+        return self.get_scenario_summary()
+
+    def get_state(self) -> dict:
+        with self._lock:
+            return dict(self._state)
+
+    def get_trajectory(self) -> list:
+        with self._trajectory_lock:
+            return list(self._trajectory)
+
+    def clear_trajectory(self):
+        with self._trajectory_lock:
+            self._trajectory.clear()
+
+    def start(self):
+        if not self._points:
+            return
+        self._stop_event.clear()
+        with self._lock:
+            self._playback_state = "playing"
+            self._start_time = time.time()
+            self._pause_time = None
+            self._pause_accumulated = 0.0
+        self._thread = threading.Thread(target=self._run, daemon=True,
+                                        name="scripted-telemetry")
+        self._thread.start()
+
+    def stop(self):
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=3.0)
+            self._thread = None
+
+    def pause(self):
+        with self._lock:
+            if self._playback_state == "playing":
+                self._playback_state = "paused"
+                self._pause_time = time.time()
+
+    def resume(self):
+        with self._lock:
+            if self._playback_state == "paused" and self._pause_time is not None:
+                self._pause_accumulated += time.time() - self._pause_time
+                self._pause_time = None
+                self._playback_state = "playing"
+
+    def reset(self):
+        self.stop()
+        with self._lock:
+            self._playback_state = "stopped"
+            self._start_time = None
+            self._pause_time = None
+            self._pause_accumulated = 0.0
+            self._state = dict(EMPTY_STATE)
+            self._state["connected"] = True
+            self._state["scripted"] = True
+        with self._trajectory_lock:
+            self._trajectory.clear()
+
+    def set_speed(self, speed: float):
+        with self._lock:
+            if self._start_time is not None and self._playback_state == "playing":
+                current_elapsed = self._get_sim_elapsed_locked()
+                self._speed = speed
+                self._start_time = time.time() - (current_elapsed / self._speed)
+                self._pause_accumulated = 0.0
+            else:
+                self._speed = speed
+
+    def _get_sim_elapsed_locked(self) -> float:
+        if self._start_time is None:
+            return 0.0
+        wall = time.time() - self._start_time - self._pause_accumulated
+        return wall * self._speed
+
+    def get_playback_status(self) -> dict:
+        with self._lock:
+            elapsed = self._get_sim_elapsed_locked()
+            total = self._points[-1].t if self._points else 0.0
+            return {
+                "state": self._playback_state,
+                "speed": self._speed,
+                "elapsed": round(elapsed, 2),
+                "total": round(total, 2),
+            }
+
+    def get_scenario_summary(self) -> dict:
+        if not self._vehicle_cfg or not self._sim_result:
+            return {}
+        cfg = self._vehicle_cfg
+        r = self._sim_result
+        return {
+            "liftoff_mass_t": round(cfg.liftoff_mass_t, 2),
+            "pad_twr_asl": round(cfg.pad_twr_asl, 2),
+            "mission_stage_dv_ms": round(cfg.mission_stage_dv_ms, 0),
+            "srb_burn_time_s": round(cfg.srb_burn_time_s, 1),
+            "apoapsis_km": round(r.apoapsis_km, 1),
+            "periapsis_km": round(r.periapsis_km, 1),
+            "n_points": len(self._points),
+        }
+
+    def _run(self):
+        import random
+
+        pts = self._points
+        if not pts:
+            return
+
+        pt_idx = 0
+        noise_pct = self._scenario.noise_pct if self._scenario else 0.02
+
+        while not self._stop_event.is_set():
+            with self._lock:
+                if self._playback_state == "paused":
+                    time.sleep(self.rate_ms / 1000.0)
+                    continue
+
+                if self._playback_state != "playing":
+                    time.sleep(self.rate_ms / 1000.0)
+                    continue
+
+                elapsed = self._get_sim_elapsed_locked()
+
+            while pt_idx + 1 < len(pts) and pts[pt_idx + 1].t <= elapsed:
+                pt_idx += 1
+
+            if pt_idx >= len(pts) - 1 and elapsed > pts[-1].t:
+                pt_idx = len(pts) - 1
+                with self._lock:
+                    self._playback_state = "finished"
+
+            p = pts[pt_idx]
+
+            if noise_pct > 0:
+                noise = lambda v: v * (1 + random.uniform(-noise_pct, noise_pct))
+            else:
+                noise = lambda v: v
+
+            alt = noise(p.altitude)
+            apoapsis = noise(p.apoapsis * 1000) if p.apoapsis else 0
+            periapsis = p.periapsis * 1000 if p.periapsis else -600000
+
+            srb_burn_time = self._vehicle_cfg.srb_burn_time_s if self._vehicle_cfg else 25.3
+            lf_total = 360.0
+            sf_total = 160.0 if (self._vehicle_cfg and self._vehicle_cfg.n_boosters > 0) else 0
+
+            state = {
+                "connected": True, "simulated": True, "scripted": True,
+                "altitude": alt,
+                "velocity": noise(p.velocity),
+                "v_vert": noise(p.v_vert),
+                "v_horiz": noise(p.v_horiz),
+                "apoapsis": apoapsis,
+                "periapsis": periapsis,
+                "pitch": noise(90.0 - p.pitch_from_v),
+                "heading": 90.0,
+                "roll": random.uniform(-2, 2) if noise_pct > 0 else 0.0,
+                "mission_time": elapsed,
+                "throttle": 1.0 if p.phase in ("BOOST", "CORE") else 0.0,
+                "liquid_fuel": max(0, lf_total - elapsed * (lf_total / 60)),
+                "solid_fuel": max(0, sf_total - elapsed * (sf_total / srb_burn_time)) if elapsed < srb_burn_time else 0,
+                "atm_density": 1.225 * (2.718 ** (-alt / 5000)) if alt < 70000 else 0,
+                "phase": p.phase,
+                "error": None,
+                "playback": self.get_playback_status(),
+            }
+
+            with self._lock:
+                self._state = state
+
+            traj_point = {
+                "t": elapsed,
+                "altitude_km": alt / 1000.0,
+                "downrange_km": p.downrange / 1000.0,
+                "velocity": state["velocity"],
+                "apoapsis_km": apoapsis / 1000.0,
+                "periapsis_km": periapsis / 1000.0,
+                "pitch": state["pitch"],
+            }
+            with self._trajectory_lock:
+                if not self._trajectory or (elapsed - self._trajectory[-1]["t"]) > 0.5:
+                    self._trajectory.append(traj_point)
+
+            if self.on_update:
+                try:
+                    self.on_update(self.get_state())
+                except Exception:
+                    pass
+
+            time.sleep(self.rate_ms / 1000.0)
