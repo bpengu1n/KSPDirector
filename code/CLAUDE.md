@@ -130,7 +130,7 @@ If you change any part mass or engine stat, re-run and update this table.
 | Target orbit | 80 × 80 km | design |
 | Orbital speed @80km | 2,279 m/s | derived |
 | TMI ΔV | ~856 m/s | design |
-| Test suite | **49/49 green** | last run |
+| Test suite | **92/92 green** | last run |
 
 ---
 
@@ -367,13 +367,99 @@ tests/test_p1_regressions.py    11 tests  — P1 high-priority fixes validated
 tests/test_p2_p3_regressions.py 21 tests  — P2/P3 fixes validated
 ─────────────────────────────────────────────────────
 Total                           49 tests  ALL PASSING
+tests/test_scenario.py          43 tests  — scenario system validated
+─────────────────────────────────────────────────────
+Total                           92 tests  ALL PASSING
 ```
 
-**Before making any change**: run the full suite and confirm 49/49 green.
+**Before making any change**: run the full suite and confirm 92/92 green.
 **When adding a feature or fixing a bug**: write the test first (red), then fix (green).
 
 The engineering review describes _why_ each fix was made, not just what changed.
 Read the relevant section before touching the associated code.
+
+---
+
+## Scriptable vehicle launch simulator
+
+The scenario system enables rapid what-if analysis: load different vehicle
+configs and pitch programs through the web UI or CLI, and replay results
+through the full mission control pipeline (FlightDirector advisories,
+go/no-go gates, web visualization).
+
+### Architecture
+
+```
+LaunchScenario (scenario.py) → VehicleConfig + pitch program
+  → run_ascent() → trajectory points
+    → ScriptedTelemetry (telemachus_client.py) — drop-in replacement
+      → broadcast_loop reads get_state() (unchanged)
+        → FlightDirector.update() (unchanged)
+          → Socket.IO → Web UI
+```
+
+### Key files
+
+- `mission_control/scenario.py` — `LaunchScenario` dataclass + `PRESET_SCENARIOS`
+- `mission_control/telemachus_client.py` — `ScriptedTelemetry` class (appended)
+- `mission_control/server.py` — `/api/scenario/*` routes + `MissionSession`
+- `mission_control/static/index.html` — scenario control panel + `/api/constants`
+- `tests/test_scenario.py` — 43 tests covering model, playback, API, integration
+
+### Usage
+
+```bash
+# CLI: start with preset scenario
+python mission_control/server.py --scenario nominal
+python mission_control/server.py --scenario steep_ascent
+
+# API: load preset
+curl -X POST http://localhost:5000/api/scenario/load \
+  -H 'Content-Type: application/json' -d '{"preset": "steep_ascent"}'
+
+# API: load custom params
+curl -X POST http://localhost:5000/api/scenario/load \
+  -H 'Content-Type: application/json' \
+  -d '{"booster_type":"thumper","n_boosters":3,"booster_pct":25,"pitch_program":"steep"}'
+
+# Playback controls
+curl -X POST http://localhost:5000/api/scenario/start
+curl -X POST http://localhost:5000/api/scenario/speed -d '{"speed": 5}'
+```
+
+### Preset scenarios
+
+| Key | Description | Purpose |
+|---|---|---|
+| `nominal` | Perseus 1 default | Baseline |
+| `steep_ascent` | Steep pitch program | Higher apoapsis, more gravity loss |
+| `shallow_ascent` | Shallow pitch program | Lower apoapsis, less gravity loss |
+| `late_turn` | Late turn pitch program | Delayed gravity turn |
+| `heavy_payload` | +0.5t extra payload | Performance margin testing |
+| `thumper_variant` | Thumper boosters @15% | Alternative SRB |
+| `high_twr` | Hammer @45% thrust | Over-powered launch |
+| `abort_steep` | Steep + 45% + 10% noise | Abort training |
+
+### Constants centralization
+
+Kerbin physics constants (`R_KERBIN`, `MU_KERBIN`, `ATM_CEIL`, etc.) are
+served from `/api/constants` so the JS ballistic projection engine stays
+in sync with the Python sim. The frontend loads these on Socket.IO connect.
+
+### Server state
+
+All mutable server state lives in `MissionSession` (`server.py:session`).
+Access via `session.telemetry_client`, `session.flight_director`, etc.
+The module-level `__getattr__` provides backward-compatible reads.
+
+### Test suite
+
+```bash
+# Full suite: 92 tests (49 regression + 43 scenario)
+cd /home/user/KSPDirector/code
+python -m unittest tests.test_p0_regressions tests.test_p1_regressions \
+    tests.test_p2_p3_regressions tests.test_scenario -v
+```
 
 ---
 

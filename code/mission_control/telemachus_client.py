@@ -299,8 +299,8 @@ class TelematicusClient:
         if self.on_update:
             try:
                 self.on_update(self.get_state())
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("on_update callback error: %s", exc)
 
 
 class SimulatedTelemetry:
@@ -441,8 +441,8 @@ class SimulatedTelemetry:
             if self.on_update:
                 try:
                     self.on_update(self.get_state())
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("SimulatedTelemetry on_update error: %s", exc)
 
             time.sleep(self.rate_ms / 1000.0)
 
@@ -692,7 +692,7 @@ class ScriptedTelemetry:
             if self.on_update:
                 try:
                     self.on_update(self.get_state())
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("ScriptedTelemetry on_update error: %s", exc)
 
             time.sleep(self.rate_ms / 1000.0)

@@ -594,10 +594,21 @@ function getCanvasSize(id) {
 function invalidateCanvasSizes() {
   Object.keys(_canvasSizes).forEach(k => delete _canvasSizes[k]);
 }
-const R_KM = 600;         // Kerbin radius km
-const ATM_CEIL_KM = 70;   // atmosphere ceiling km
-const CIRC_SPEED_80KM = 2279; // m/s, circular orbit at 80km
-const MU_KERBIN_PROJ = 3.5316e12; // m³/s², Kerbin gravitational parameter
+// Kerbin physics constants — defaults match sim/constants.py, refreshed from
+// /api/constants on connect so Python sim and JS projection stay in sync.
+let R_KM = 600;
+let ATM_CEIL_KM = 70;
+let CIRC_SPEED_80KM = 2279;
+let MU_KERBIN_PROJ = 3.5316e12;
+
+function loadConstants() {
+  fetch('/api/constants').then(r => r.json()).then(c => {
+    R_KM = c.R_KM;
+    ATM_CEIL_KM = c.ATM_CEIL_KM;
+    MU_KERBIN_PROJ = c.MU_KERBIN;
+    CIRC_SPEED_80KM = Math.round(Math.sqrt(c.MU_KERBIN / (c.R_KERBIN + 80000)));
+  }).catch(() => {});
+}
 
 // ---------------------------------------------------------------
 // BALLISTIC PROJECTION ENGINE
@@ -609,7 +620,11 @@ const MU_KERBIN_PROJ = 3.5316e12; // m³/s², Kerbin gravitational parameter
 // planet — without it, even a circular orbit would appear to dive.
 
 function projectBallisticArc(alt_m, v_horiz_ms, v_vert_ms, dr_km) {
-  const R = 600000;
+  // R and MU sourced from loadConstants() / /api/constants to stay in sync
+  // with the Python sim.  Euler integration at dt=2s for up to 600s of coast.
+  // Accuracy: ~1% altitude error over 300s coast; sufficient for abort
+  // visualization but not precision orbit determination.
+  const R = R_KM * 1000;
   const MU = MU_KERBIN_PROJ;
   const dt = 2.0;
   const MAX_STEPS = 300;
@@ -690,6 +705,7 @@ const socket = io({ transports: ['websocket', 'polling'] });
 
 socket.on('connect', () => {
   console.log('Socket.IO connected');
+  loadConstants();
   socket.emit('request_nominal');
 });
 

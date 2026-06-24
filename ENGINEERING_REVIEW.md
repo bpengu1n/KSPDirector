@@ -769,3 +769,100 @@ All P0 and the following P1 items are resolved. Remaining open:
 **Flight Director status: FLIGHT READY.** All operationally critical issues closed. 
 Simulation mode fully functional. Live KSP mode requires Telemachus plugin and 
 field-verification of topic names against installed plugin version.
+
+---
+
+## Vehicle Launch Simulator — Code Review Findings (2026-06-24)
+
+Following implementation of the scriptable vehicle launch simulator feature
+(LaunchScenario, ScriptedTelemetry, scenario API, web UI control panel), a
+secondary code review identified 12 findings. Resolution status below.
+
+### P1 — High Priority (all resolved)
+
+**P1-1: Hardcoded Constants Duplication (JS side)**
+- **Finding:** `projectBallisticArc` hardcoded `R=600000`, `MU=3.5316e12`, etc.
+  Risk of drift between Python sim and JS visualization.
+- **Resolution:** Added `/api/constants` endpoint serving `R_KERBIN`, `MU_KERBIN`,
+  `ATM_CEIL`, `RHO0`, `SCALE_H` from `sim.constants`. JS now loads constants via
+  `loadConstants()` on Socket.IO connect and uses centralized variables.
+  Fallback defaults preserved in case fetch fails.
+- **Test:** `TestConstantsAPI.test_constants_endpoint_returns_kerbin_params`,
+  `test_constants_match_sim`.
+
+**P1-2: sys.path Manipulation in scenario.py**
+- **Finding:** `sys.path.insert(0, os.path.join(...))` for relative imports.
+  Fragile in packaged deployments.
+- **Resolution:** Removed `sys.path` manipulation from `scenario.py`. `server.py`
+  already sets `ROOT` on `sys.path` at startup, which covers all import paths.
+- **Test:** All 92 tests pass without the path hack.
+
+**P1-3: Global State in server.py**
+- **Finding:** Five module-level globals (`telemetry_client`, `flight_director`,
+  `nominal_traj`, `current_scenario`, `EMIT_RATE_HZ`) complicate testing.
+- **Resolution:** Introduced `MissionSession` container class. All server state
+  accessed via `session.telemetry_client`, etc. Module-level `__getattr__`
+  provides backward-compatible reads for any external code referencing the
+  old names. Tests updated to use `srv.session.*`.
+- **Test:** All API tests pass with the new structure.
+
+**P1-4: Numerical Integration Robustness (JS)**
+- **Finding:** Fixed `dt=2.0` Euler stepping may accumulate error.
+- **Resolution:** Added inline accuracy documentation to `projectBallisticArc`:
+  Euler at dt=2s for up to 600s coast, ~1% altitude error over 300s,
+  sufficient for abort visualization but not precision orbit determination.
+
+### P2 — Medium Priority (all resolved)
+
+**P2-5: Error Handling & Resilience**
+- **Finding:** `except Exception: pass` silently swallows errors in on_update
+  callbacks (3 locations in telemachus_client.py) and scenario load emit
+  (server.py).
+- **Resolution:** All four silent passes replaced with `logger.warning()` calls
+  that log the exception type and message with context.
+
+**P2-6: Units & Dimensional Analysis**
+- **Finding:** No explicit unit documentation on LaunchScenario fields.
+- **Resolution:** Added class docstring and inline comments documenting units:
+  extra_payload (tonnes), cd (dimensionless), area_base (m²), booster_pct (%),
+  noise_pct (fraction), playback_speed (multiplier).
+
+**P2-7: Test Coverage Gaps**
+- **Finding:** Missing edge-case tests for boundary validation, abort preset.
+- **Resolution:** Added `TestScenarioEdgeCases` (7 tests): exact bounds, just
+  outside bounds, unknown keys in from_dict, abort preset validation and sim,
+  zero-booster scenario. Added `TestConstantsAPI` (2 tests).
+  Total: 92 tests (49 original + 35 scenario + 8 review).
+
+### P3 — Low / Polish (resolved)
+
+**P3-9: Abort Scenario Preset**
+- **Finding:** No preset with intentional failure modes for training.
+- **Resolution:** Added `abort_steep` preset: steep pitch program, 45% booster
+  thrust (over-powered), 10% telemetry noise. Designed to trigger FlightDirector
+  CAUTION/WARNING advisories for operator training.
+
+### Deferred Items
+
+**P2-8: Frontend Performance** — Acceptable for current single-vehicle use case.
+Throttle renders if scaling to multi-vehicle.
+
+**P3-10: Documentation Updates** — ENGINEERING_REVIEW.md updated with this
+section. CLAUDE.md updated with scenario system documentation.
+
+**P3-11: CLI / Non-UI Usage** — Existing `--scenario NAME` CLI flag provides
+headless startup. `python mission_control/server.py --scenario nominal` runs
+without browser interaction.
+
+**P3-12: Licensing / Attribution** — Kerbin parameters are derived from KSP
+public wiki data (stock game values). No external proprietary algorithms used.
+
+### Summary
+
+| Priority | Count | Status |
+|---|---|---|
+| P1 — High | 4 | All resolved |
+| P2 — Medium | 3 | All resolved |
+| P3 — Low | 4 | 1 resolved, 3 deferred (acceptable) |
+
+**Test suite: 92/92 green** (49 original regression + 35 scenario + 8 review edge cases).

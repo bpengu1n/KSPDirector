@@ -342,11 +342,11 @@ class TestScenarioAPI(unittest.TestCase):
         from mission_control.nominal_compare import NominalTrajectory, FlightDirector
         import mission_control.server as srv
 
-        # Set up server globals for testing
+        # Set up server session state for testing
         nominal = NominalTrajectory.load()
-        srv.nominal_traj = nominal
-        srv.flight_director = FlightDirector(nominal)
-        srv.telemetry_client = None
+        srv.session.nominal_traj = nominal
+        srv.session.flight_director = FlightDirector(nominal)
+        srv.session.telemetry_client = None
 
         cls.app = app
         cls.app.config["TESTING"] = True
@@ -403,16 +403,16 @@ class TestScenarioAPI(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         # Stop the client to clean up threads
         import mission_control.server as srv
-        if srv.telemetry_client:
-            srv.telemetry_client.stop()
+        if srv.session.telemetry_client:
+            srv.session.telemetry_client.stop()
 
     def test_api_scenario_speed(self):
         self.client.post("/api/scenario/load", json={"preset": "nominal"})
         resp = self.client.post("/api/scenario/speed", json={"speed": 5.0})
         self.assertEqual(resp.status_code, 200)
         import mission_control.server as srv
-        if srv.telemetry_client:
-            srv.telemetry_client.stop()
+        if srv.session.telemetry_client:
+            srv.session.telemetry_client.stop()
 
     def test_api_scenario_current(self):
         self.client.post("/api/scenario/load", json={"preset": "nominal"})
@@ -422,8 +422,8 @@ class TestScenarioAPI(unittest.TestCase):
         self.assertIn("scenario", data)
         self.assertIn("playback", data)
         import mission_control.server as srv
-        if srv.telemetry_client:
-            srv.telemetry_client.stop()
+        if srv.session.telemetry_client:
+            srv.session.telemetry_client.stop()
 
 
 # ---------------------------------------------------------------------------
@@ -465,6 +465,94 @@ class TestScriptedDirectorIntegration(unittest.TestCase):
 
         # Different pitch programs produce different apoapsis at core burnout
         self.assertNotAlmostEqual(r1.apoapsis_km, r2.apoapsis_km, places=0)
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: Edge cases & review findings (P2-7)
+# ---------------------------------------------------------------------------
+
+class TestScenarioEdgeCases(unittest.TestCase):
+    """Boundary and edge-case tests added per code review P2-7."""
+
+    def test_validation_at_exact_bounds(self):
+        from mission_control.scenario import LaunchScenario
+        s = LaunchScenario(
+            booster_pct=1.0, n_boosters=0, noise_pct=0.0,
+            playback_speed=0.25, extra_payload=0.0, cd=0.05, area_base=0.5,
+        )
+        self.assertEqual(s.validate(), [])
+
+        s = LaunchScenario(
+            booster_pct=100.0, n_boosters=6, noise_pct=0.20,
+            playback_speed=10.0, extra_payload=2.0, cd=1.0, area_base=5.0,
+        )
+        self.assertEqual(s.validate(), [])
+
+    def test_validation_just_outside_bounds(self):
+        from mission_control.scenario import LaunchScenario
+        s = LaunchScenario(booster_pct=0.99)
+        self.assertTrue(len(s.validate()) > 0)
+
+        s = LaunchScenario(noise_pct=0.201)
+        self.assertTrue(len(s.validate()) > 0)
+
+        s = LaunchScenario(n_boosters=7)
+        self.assertTrue(len(s.validate()) > 0)
+
+    def test_from_dict_ignores_unknown_keys(self):
+        from mission_control.scenario import LaunchScenario
+        d = {"name": "Test", "unknown_key": 42, "booster_type": "hammer"}
+        s = LaunchScenario.from_dict(d)
+        self.assertEqual(s.name, "Test")
+        self.assertFalse(hasattr(s, "unknown_key"))
+
+    def test_abort_preset_valid(self):
+        from mission_control.scenario import PRESET_SCENARIOS
+        self.assertIn("abort_steep", PRESET_SCENARIOS)
+        errors = PRESET_SCENARIOS["abort_steep"].validate()
+        self.assertEqual(errors, [])
+
+    def test_abort_preset_produces_sim_result(self):
+        from mission_control.scenario import PRESET_SCENARIOS
+        s = PRESET_SCENARIOS["abort_steep"]
+        result = run_ascent(s.to_vehicle_config(), s.get_pitch_program())
+        self.assertTrue(len(result.points) > 5)
+
+    def test_zero_boosters_scenario(self):
+        from mission_control.scenario import LaunchScenario
+        s = LaunchScenario(n_boosters=0)
+        self.assertEqual(s.validate(), [])
+        cfg = s.to_vehicle_config()
+        self.assertEqual(cfg.n_boosters, 0)
+
+
+class TestConstantsAPI(unittest.TestCase):
+    """Tests for the /api/constants endpoint (P1-1)."""
+
+    @classmethod
+    def setUpClass(cls):
+        from mission_control.server import app
+        cls.app = app
+        cls.app.config["TESTING"] = True
+        cls.client = cls.app.test_client()
+
+    def test_constants_endpoint_returns_kerbin_params(self):
+        resp = self.client.get("/api/constants")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertAlmostEqual(data["R_KERBIN"], 600000.0)
+        self.assertAlmostEqual(data["MU_KERBIN"], 3.5316e12)
+        self.assertAlmostEqual(data["ATM_CEIL"], 70000.0)
+        self.assertEqual(data["R_KM"], 600.0)
+        self.assertEqual(data["ATM_CEIL_KM"], 70.0)
+
+    def test_constants_match_sim(self):
+        from sim.constants import R_KERBIN, MU_KERBIN, ATM_CEIL
+        resp = self.client.get("/api/constants")
+        data = resp.get_json()
+        self.assertEqual(data["R_KERBIN"], R_KERBIN)
+        self.assertEqual(data["MU_KERBIN"], MU_KERBIN)
+        self.assertEqual(data["ATM_CEIL"], ATM_CEIL)
 
 
 if __name__ == "__main__":

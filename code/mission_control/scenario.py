@@ -10,11 +10,7 @@ options for the scripted telemetry engine.
 
 from __future__ import annotations
 
-import sys
-import os
 from dataclasses import dataclass, asdict
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from sim.vehicle import VehicleConfig
 from sim.constants import ENGINES
@@ -23,16 +19,22 @@ from sim.trajectory import PITCH_PROGRAMS
 
 @dataclass
 class LaunchScenario:
+    """Launch scenario parameters bridging UI/CLI input to the sim.
+
+    Units: extra_payload in tonnes, cd dimensionless, area_base in m²,
+    booster_pct as percentage 1-100, noise_pct as fraction 0.0-0.20,
+    playback_speed as multiplier (1.0 = real-time).
+    """
     name: str = "Custom Scenario"
-    booster_type: str = "hammer"
-    n_boosters: int = 2
-    booster_pct: float = 20.0
-    extra_payload: float = 0.0
-    cd: float = 0.22
-    area_base: float = 1.80
-    pitch_program: str = "nominal"
-    playback_speed: float = 1.0
-    noise_pct: float = 0.02
+    booster_type: str = "hammer"          # key into sim.constants.ENGINES
+    n_boosters: int = 2                   # count, 0-6
+    booster_pct: float = 20.0             # thrust limiter, % (1-100)
+    extra_payload: float = 0.0            # tonnes
+    cd: float = 0.22                      # drag coefficient, dimensionless
+    area_base: float = 1.80               # cross-section, m²
+    pitch_program: str = "nominal"        # key into sim.trajectory.PITCH_PROGRAMS
+    playback_speed: float = 1.0           # multiplier (0.25-10.0)
+    noise_pct: float = 0.02              # telemetry noise fraction (0.0-0.20)
 
     def to_vehicle_config(self) -> VehicleConfig:
         return VehicleConfig(
@@ -108,4 +110,8 @@ PRESET_SCENARIOS = {
         name="Thumper Variant", booster_type="thumper", booster_pct=15,
     ),
     "high_twr": LaunchScenario(name="High TWR", booster_pct=45),
+    "abort_steep": LaunchScenario(
+        name="Abort Training (Steep)", pitch_program="steep",
+        booster_pct=45, noise_pct=0.10,
+    ),
 }
