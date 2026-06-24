@@ -75,7 +75,7 @@ html,body{width:100%;height:100%;background:var(--mc-bg);color:var(--mc-text);
   grid-row:2;grid-column:2;
   background:var(--mc-bg);
   display:grid;grid-template-rows:1fr 1fr;gap:1px;
-  min-height:0;overflow:hidden;
+  min-height:0;
 }
 
 /* Right: director */
@@ -585,7 +585,7 @@ html,body{width:100%;height:100%;background:var(--mc-bg);color:var(--mc-text);
 // on every animation frame tick. Invalidated on window resize.
 const _canvasSizes = {};
 function getCanvasSize(id) {
-  if (!_canvasSizes[id]) {
+  if (!_canvasSizes[id] || _canvasSizes[id].w < 50 || _canvasSizes[id].h < 50) {
     const canvas = el(id);
     if (!canvas) return {w: 800, h: 400};
     const rect = canvas.parentElement.getBoundingClientRect();

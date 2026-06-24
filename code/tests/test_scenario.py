@@ -803,5 +803,112 @@ class TestUILayoutVisibility(unittest.TestCase):
             "#timeline-canvas must have an explicit height")
 
 
+class TestUIGraphicalElements(unittest.TestCase):
+    """Tests that graphical elements (stars, globe, trajectories, axes)
+    render correctly within the viewport canvases."""
+
+    @classmethod
+    def setUpClass(cls):
+        import os
+        html_path = os.path.join(os.path.dirname(__file__),
+                                 '..', 'mission_control', 'static', 'index.html')
+        with open(html_path, 'r') as f:
+            cls.html = f.read()
+
+    def test_canvas_size_cache_retries_on_small_values(self):
+        """getCanvasSize must re-measure if cached dimensions are too small.
+        Without this, an initial layout race caches tiny values permanently,
+        causing all stars to cluster at (0,0)."""
+        import re
+        fn = re.search(r'function\s+getCanvasSize\b.*?\}', self.html, re.DOTALL)
+        self.assertIsNotNone(fn, "getCanvasSize function must exist")
+        body = fn.group(0)
+        self.assertRegex(body, r'\.w\s*<|\.h\s*<|width\s*<|height\s*<',
+            "getCanvasSize must check for small cached dimensions to force re-measure")
+
+    def test_star_positions_use_modular_arithmetic(self):
+        """Star positions must use modular arithmetic (% W, % H) to stay
+        within canvas bounds regardless of canvas size."""
+        import re
+        star_section = re.search(r'Stars.*?for.*?\{(.*?)\}', self.html, re.DOTALL)
+        self.assertIsNotNone(star_section, "Star rendering loop must exist")
+        body = star_section.group(1)
+        self.assertIn('% W', body, "Star X positions must use % W")
+        self.assertIn('% H', body, "Star Y positions must use % H")
+
+    def test_globe_renders_kerbin_body(self):
+        """Globe must render the Kerbin circle with a gradient fill."""
+        self.assertIn('R_px', self.html, "Globe must compute R_px for Kerbin radius")
+        self.assertRegex(self.html, r'arc\(cx,\s*cy,\s*R_px',
+            "Globe must draw Kerbin as a circle arc at (cx,cy) with radius R_px")
+
+    def test_globe_renders_atmosphere_glow(self):
+        """Globe must render the atmosphere glow band at 70km."""
+        self.assertIn('atmR_px', self.html,
+            "Globe must compute atmosphere radius in pixels")
+        self.assertIn('ATM_CEIL_KM', self.html,
+            "Atmosphere radius must reference ATM_CEIL_KM constant")
+
+    def test_globe_scale_derived_from_canvas_size(self):
+        """Globe scale must be computed from canvas dimensions so the view
+        adapts to the actual canvas size, not a hardcoded value."""
+        import re
+        scale_match = re.search(r'scale\s*=.*?Math\.min\(W,\s*H\)', self.html)
+        self.assertIsNotNone(scale_match,
+            "Globe scale must use Math.min(W, H) to adapt to canvas size")
+
+    def test_trajectory_plot_has_valid_axis_padding(self):
+        """Trajectory plot must have positive padding on all four sides
+        so axis labels and data don't clip at canvas edges."""
+        import re
+        pad_match = re.search(r'pad\s*=\s*\{\s*l:\s*(\d+),\s*r:\s*(\d+),\s*t:\s*(\d+),\s*b:\s*(\d+)\s*\}', self.html)
+        self.assertIsNotNone(pad_match, "Trajectory plot must define pad {l, r, t, b}")
+        l, r, t, b = int(pad_match.group(1)), int(pad_match.group(2)), \
+                      int(pad_match.group(3)), int(pad_match.group(4))
+        self.assertGreater(l, 0, "Left padding must be positive for Y-axis labels")
+        self.assertGreater(r, 0, "Right padding must be positive")
+        self.assertGreater(t, 0, "Top padding must be positive for title")
+        self.assertGreater(b, 0, "Bottom padding must be positive for X-axis labels")
+
+    def test_all_three_canvases_exist(self):
+        """All three canvas elements must exist: globe, trajectory, timeline."""
+        for canvas_id in ['globe-canvas', 'traj-canvas', 'timeline-canvas']:
+            self.assertIn(f'id="{canvas_id}"', self.html,
+                f"Canvas #{canvas_id} must exist in the HTML")
+
+    def test_canvas_elements_fill_parent(self):
+        """Canvas elements must use width:100%;height:100% to fill their
+        parent panel, so the drawing area matches the panel size."""
+        import re
+        canvas_css = re.search(r'\.canvas-panel\s+canvas\s*\{([^}]+)\}', self.html)
+        self.assertIsNotNone(canvas_css, ".canvas-panel canvas CSS rule must exist")
+        rule = canvas_css.group(1)
+        self.assertIn('width:100%', rule, "Canvas must have width:100%")
+        self.assertIn('height:100%', rule, "Canvas must have height:100%")
+
+    def test_center_panel_does_not_clip_canvases(self):
+        """#center-panel should use min-height:0 without overflow:hidden,
+        so canvas content is never clipped by the parent grid cell."""
+        import re
+        m = re.search(r'#center-panel\s*\{([^}]+)\}', self.html)
+        self.assertIsNotNone(m, "#center-panel CSS rule must exist")
+        css = m.group(1)
+        self.assertIn('min-height', css, "#center-panel must have min-height:0")
+        self.assertNotIn('overflow', css,
+            "#center-panel should NOT have overflow:hidden — it clips canvas content")
+
+    def test_globe_renders_launch_site_marker(self):
+        """Globe must render the launch site marker at (0, 0)."""
+        self.assertIn('toXY(0, 0)', self.html,
+            "Globe must render launch site marker at downrange=0, altitude=0")
+
+    def test_globe_renders_vehicle_position_marker(self):
+        """Globe must render the current vehicle position as a marker dot."""
+        import re
+        marker = re.search(r'#69f0ae.*fill|fill.*#69f0ae', self.html)
+        self.assertIsNotNone(marker,
+            "Globe must render vehicle position marker (green #69f0ae dot)")
+
+
 if __name__ == "__main__":
     unittest.main()
