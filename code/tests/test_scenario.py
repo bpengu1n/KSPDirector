@@ -527,7 +527,7 @@ class TestScenarioEdgeCases(unittest.TestCase):
 
 
 class TestCoastPhase(unittest.TestCase):
-    """Tests for the coast phase after core burnout."""
+    """Tests for trajectory phases after core burnout (Terrier → orbit)."""
 
     def test_trajectory_continues_past_core_burnout(self):
         result = run_ascent()
@@ -535,30 +535,50 @@ class TestCoastPhase(unittest.TestCase):
         last_point = result.points[-1]
         self.assertGreater(last_point.t, result.core_burnout.t)
 
-    def test_coast_phase_label(self):
+    def test_terrier_phase_after_core_burnout(self):
         result = run_ascent()
         phases = set(p.phase for p in result.points)
-        self.assertIn("COAST", phases)
+        self.assertIn("TERRIER", phases)
+        self.assertIn("COAST_APO", phases)
 
-    def test_coast_has_zero_thrust(self):
+    def test_nominal_reaches_orbit(self):
         result = run_ascent()
-        coast_points = [p for p in result.points if p.phase == "COAST"]
-        self.assertTrue(len(coast_points) > 0)
+        phases = set(p.phase for p in result.points)
+        self.assertIn("ORBIT", phases)
+        orbit_pts = [p for p in result.points if p.phase == "ORBIT"]
+        self.assertTrue(len(orbit_pts) > 0)
+        self.assertGreater(orbit_pts[0].altitude / 1000, 70)
+
+    def test_coast_apo_has_zero_thrust(self):
+        result = run_ascent()
+        coast_pts = [p for p in result.points if p.phase == "COAST_APO"]
+        self.assertTrue(len(coast_pts) > 0)
 
     def test_burnout_orbital_params_preserved(self):
         result = run_ascent()
         self.assertAlmostEqual(result.apoapsis_km, 24.6, delta=1.0)
         self.assertAlmostEqual(result.periapsis_km, -587, delta=20)
 
-    def test_coast_ends_at_surface_or_tmax(self):
+    def test_orbit_near_target(self):
         result = run_ascent()
-        last_point = result.points[-1]
-        at_surface = last_point.altitude < 2000
-        at_tmax = last_point.t >= 395
-        self.assertTrue(at_surface or at_tmax,
-                        f"Last point: alt={last_point.altitude:.0f}m, t={last_point.t:.1f}s")
+        orbit_pts = [p for p in result.points if p.phase == "ORBIT"]
+        self.assertTrue(len(orbit_pts) > 0)
+        p = orbit_pts[0]
+        self.assertAlmostEqual(p.apoapsis, 80, delta=5)
+        self.assertGreater(p.periapsis, 65)
 
-    def test_scripted_telemetry_plays_coast(self):
+    def test_full_phase_progression(self):
+        result = run_ascent()
+        phase_order = []
+        prev = None
+        for p in result.points:
+            if p.phase != prev:
+                phase_order.append(p.phase)
+                prev = p.phase
+        self.assertEqual(phase_order[:3], ["BOOST", "CORE", "TERRIER"])
+        self.assertIn("COAST_APO", phase_order)
+
+    def test_scripted_telemetry_plays_orbit(self):
         from mission_control.telemachus_client import ScriptedTelemetry
         from mission_control.scenario import LaunchScenario
         st = ScriptedTelemetry(rate_ms=50)
@@ -566,12 +586,13 @@ class TestCoastPhase(unittest.TestCase):
         st.start()
         time.sleep(0.3)
         state = st.get_state()
-        self.assertIn(state.get("phase"), ("COAST", "LANDED"))
+        self.assertIn(state.get("phase"),
+                      ("TERRIER", "COAST_APO", "CIRCULARIZE", "ORBIT"))
         status = st.get_playback_status()
         self.assertEqual(status["state"], "playing")
         st.stop()
 
-    def test_scripted_telemetry_reaches_landed(self):
+    def test_scripted_telemetry_stays_in_orbit(self):
         from mission_control.telemachus_client import ScriptedTelemetry
         from mission_control.scenario import LaunchScenario
         st = ScriptedTelemetry(rate_ms=50)
@@ -579,9 +600,8 @@ class TestCoastPhase(unittest.TestCase):
         st.start()
         time.sleep(0.5)
         state = st.get_state()
-        self.assertEqual(state.get("phase"), "LANDED")
-        self.assertEqual(state.get("altitude"), 0.0)
-        self.assertEqual(state.get("velocity"), 0.0)
+        self.assertIn(state.get("phase"), ("ORBIT", "COAST_APO", "CIRCULARIZE"))
+        self.assertGreater(state.get("altitude", 0), 50000)
         status = st.get_playback_status()
         self.assertEqual(status["state"], "playing")
         st.stop()

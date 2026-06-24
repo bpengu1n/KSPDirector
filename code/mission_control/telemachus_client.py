@@ -362,6 +362,18 @@ class SimulatedTelemetry:
         if self._thread:
             self._thread.join(timeout=3.0)
 
+    def _compute_liquid_fuel(self, elapsed, phase):
+        core_burn_time = 60.0
+        terrier_burn_time = 225.0
+        if elapsed < core_burn_time:
+            return max(0, 360 - elapsed * (360 / core_burn_time))
+        if phase in ("TERRIER", "CIRCULARIZE"):
+            terrier_elapsed = elapsed - core_burn_time
+            return max(0, 360 - terrier_elapsed * (360 / terrier_burn_time))
+        if phase in ("COAST_APO",):
+            return 360 * max(0, 1.0 - (elapsed - core_burn_time) / terrier_burn_time)
+        return 0
+
     def _run(self):
         import random
         try:
@@ -424,8 +436,8 @@ class SimulatedTelemetry:
                 "heading": 90.0,
                 "roll": random.uniform(-2, 2) if not landed else 0.0,
                 "mission_time": elapsed,
-                "throttle": 0.0 if landed else (1.0 if p.phase in ("BOOST", "CORE") else 0.0),
-                "liquid_fuel": max(0, 360 - elapsed * (360 / 60)),
+                "throttle": 0.0 if landed else (1.0 if p.phase in ("BOOST", "CORE", "TERRIER", "CIRCULARIZE") else 0.0),
+                "liquid_fuel": self._compute_liquid_fuel(elapsed, p.phase),
                 "solid_fuel":  max(0, 160 - elapsed * (160 / 25.3)) if elapsed < 25.3 else 0,
                 "atm_density": 1.225 if landed else (1.225 * (2.718 ** (-alt / 5000)) if alt < 70000 else 0),
                 "phase": phase,
@@ -617,6 +629,18 @@ class ScriptedTelemetry:
             "n_points": len(self._points),
         }
 
+    def _compute_liquid_fuel(self, elapsed, phase):
+        core_burn_time = 60.0
+        terrier_burn_time = 225.0
+        if elapsed < core_burn_time:
+            return max(0, 360 - elapsed * (360 / core_burn_time))
+        if phase in ("TERRIER", "CIRCULARIZE"):
+            terrier_elapsed = elapsed - core_burn_time
+            return max(0, 360 - terrier_elapsed * (360 / terrier_burn_time))
+        if phase in ("COAST_APO",):
+            return 360 * max(0, 1.0 - (elapsed - core_burn_time) / terrier_burn_time)
+        return 0
+
     def _run(self):
         import random
 
@@ -688,8 +712,8 @@ class ScriptedTelemetry:
                 "heading": 90.0,
                 "roll": (random.uniform(-2, 2) if noise_pct > 0 else 0.0) if not landed else 0.0,
                 "mission_time": elapsed,
-                "throttle": 0.0 if landed else (1.0 if p.phase in ("BOOST", "CORE") else 0.0),
-                "liquid_fuel": max(0, lf_total - elapsed * (lf_total / 60)),
+                "throttle": 0.0 if landed else (1.0 if p.phase in ("BOOST", "CORE", "TERRIER", "CIRCULARIZE") else 0.0),
+                "liquid_fuel": self._compute_liquid_fuel(elapsed, p.phase),
                 "solid_fuel": max(0, sf_total - elapsed * (sf_total / srb_burn_time)) if elapsed < srb_burn_time else 0,
                 "atm_density": 1.225 if landed else (1.225 * (2.718 ** (-alt / 5000)) if alt < 70000 else 0),
                 "phase": phase,
