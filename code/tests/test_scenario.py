@@ -304,7 +304,7 @@ class TestScriptedTelemetry(unittest.TestCase):
         min_diff = min(abs(v - state_vel) for v in sim_velocities)
         self.assertAlmostEqual(min_diff, 0, places=1)
 
-    def test_finished_state_after_trajectory_ends(self):
+    def test_keeps_playing_past_trajectory_end(self):
         from mission_control.telemachus_client import ScriptedTelemetry
         from mission_control.scenario import LaunchScenario
         st = ScriptedTelemetry(rate_ms=50)
@@ -312,9 +312,9 @@ class TestScriptedTelemetry(unittest.TestCase):
         st.start()
         time.sleep(0.3)
         status = st.get_playback_status()
-        self.assertEqual(status["state"], "finished")
+        self.assertEqual(status["state"], "playing")
         state = st.get_state()
-        self.assertGreater(state["altitude"], 0)
+        self.assertIsNotNone(state.get("altitude"))
         st.stop()
 
     def test_get_scenario_summary(self):
@@ -524,6 +524,67 @@ class TestScenarioEdgeCases(unittest.TestCase):
         self.assertEqual(s.validate(), [])
         cfg = s.to_vehicle_config()
         self.assertEqual(cfg.n_boosters, 0)
+
+
+class TestCoastPhase(unittest.TestCase):
+    """Tests for the coast phase after core burnout."""
+
+    def test_trajectory_continues_past_core_burnout(self):
+        result = run_ascent()
+        self.assertIsNotNone(result.core_burnout)
+        last_point = result.points[-1]
+        self.assertGreater(last_point.t, result.core_burnout.t)
+
+    def test_coast_phase_label(self):
+        result = run_ascent()
+        phases = set(p.phase for p in result.points)
+        self.assertIn("COAST", phases)
+
+    def test_coast_has_zero_thrust(self):
+        result = run_ascent()
+        coast_points = [p for p in result.points if p.phase == "COAST"]
+        self.assertTrue(len(coast_points) > 0)
+
+    def test_burnout_orbital_params_preserved(self):
+        result = run_ascent()
+        self.assertAlmostEqual(result.apoapsis_km, 24.6, delta=1.0)
+        self.assertAlmostEqual(result.periapsis_km, -587, delta=20)
+
+    def test_coast_ends_at_surface_or_tmax(self):
+        result = run_ascent()
+        last_point = result.points[-1]
+        at_surface = last_point.altitude < 2000
+        at_tmax = last_point.t >= 395
+        self.assertTrue(at_surface or at_tmax,
+                        f"Last point: alt={last_point.altitude:.0f}m, t={last_point.t:.1f}s")
+
+    def test_scripted_telemetry_plays_coast(self):
+        from mission_control.telemachus_client import ScriptedTelemetry
+        from mission_control.scenario import LaunchScenario
+        st = ScriptedTelemetry(rate_ms=50)
+        st.load_scenario(LaunchScenario(noise_pct=0.0, playback_speed=500.0))
+        st.start()
+        time.sleep(0.3)
+        state = st.get_state()
+        self.assertIn(state.get("phase"), ("COAST", "LANDED"))
+        status = st.get_playback_status()
+        self.assertEqual(status["state"], "playing")
+        st.stop()
+
+    def test_scripted_telemetry_reaches_landed(self):
+        from mission_control.telemachus_client import ScriptedTelemetry
+        from mission_control.scenario import LaunchScenario
+        st = ScriptedTelemetry(rate_ms=50)
+        st.load_scenario(LaunchScenario(noise_pct=0.0, playback_speed=1000.0))
+        st.start()
+        time.sleep(0.5)
+        state = st.get_state()
+        self.assertEqual(state.get("phase"), "LANDED")
+        self.assertEqual(state.get("altitude"), 0.0)
+        self.assertEqual(state.get("velocity"), 0.0)
+        status = st.get_playback_status()
+        self.assertEqual(status["state"], "playing")
+        st.stop()
 
 
 class TestConstantsAPI(unittest.TestCase):

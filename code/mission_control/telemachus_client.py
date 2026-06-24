@@ -389,36 +389,46 @@ class SimulatedTelemetry:
                 pt_idx = len(pts) - 1
 
             p = pts[pt_idx]
+            landed = (pt_idx >= len(pts) - 1 and elapsed > p.t and
+                      p.altitude < 1000)
+
             noise = lambda v: v * (1 + random.uniform(-self.noise_pct, self.noise_pct))
 
-            alt = noise(p.altitude)
-            apoapsis = noise(p.apoapsis * 1000) if p.apoapsis else 0
-            periapsis = p.periapsis * 1000 if p.periapsis else -600000
+            if landed:
+                alt = 0.0
+                vel = 0.0
+                v_v = 0.0
+                v_h = 0.0
+                pitch = 0.0
+                phase = "LANDED"
+            else:
+                alt = noise(p.altitude)
+                vel = noise(p.velocity)
+                v_v = noise(p.v_vert)
+                v_h = noise(p.v_horiz)
+                pitch = noise(90.0 - p.pitch_from_v)
+                phase = p.phase
+
+            apoapsis = noise(p.apoapsis * 1000) if p.apoapsis and not landed else 0
+            periapsis = p.periapsis * 1000 if p.periapsis and not landed else 0
 
             state = {
                 "connected": True, "simulated": True,
                 "altitude": alt,
-                "velocity": noise(p.velocity),
-                "v_vert": noise(p.v_vert),
-                "v_horiz": noise(p.v_horiz),
+                "velocity": vel,
+                "v_vert": v_v,
+                "v_horiz": v_h,
                 "apoapsis": apoapsis,
                 "periapsis": periapsis,
-                # Fix P0-04: convert to KSP / Telemachus pitch convention
-                # KSP convention: +90° = straight up, 0° = horizontal
-                # sim stores pitch_from_v: 0° = straight up, 90° = horizontal
-                # These are complementary: ksp_pitch = 90 - pitch_from_v
-                "pitch": noise(90.0 - p.pitch_from_v),
+                "pitch": pitch,
                 "heading": 90.0,
-                "roll": random.uniform(-2, 2),
+                "roll": random.uniform(-2, 2) if not landed else 0.0,
                 "mission_time": elapsed,
-                "throttle": 1.0 if p.phase in ("BOOST", "CORE") else 0.0,
-                # Fix P0-02: correct KSP unit values
-                # LiquidFuel: FL-T800 = 360 units (1.8t at 0.005 t/unit, 9:11 LF:OX)
-                # SolidFuel:  2x Hammer = 160 units (2 × 80; each 0.60t at 0.0075 t/unit)
+                "throttle": 0.0 if landed else (1.0 if p.phase in ("BOOST", "CORE") else 0.0),
                 "liquid_fuel": max(0, 360 - elapsed * (360 / 60)),
                 "solid_fuel":  max(0, 160 - elapsed * (160 / 25.3)) if elapsed < 25.3 else 0,
-                "atm_density": 1.225 * (2.718 ** (-alt / 5000)) if alt < 70000 else 0,
-                "phase": p.phase,
+                "atm_density": 1.225 if landed else (1.225 * (2.718 ** (-alt / 5000)) if alt < 70000 else 0),
+                "phase": phase,
                 "error": None,
             }
 
@@ -632,21 +642,35 @@ class ScriptedTelemetry:
             while pt_idx + 1 < len(pts) and pts[pt_idx + 1].t <= elapsed:
                 pt_idx += 1
 
-            if pt_idx >= len(pts) - 1 and elapsed > pts[-1].t:
+            if pt_idx >= len(pts) - 1:
                 pt_idx = len(pts) - 1
-                with self._lock:
-                    self._playback_state = "finished"
 
             p = pts[pt_idx]
+            landed = (pt_idx >= len(pts) - 1 and elapsed > p.t and
+                      p.altitude < 1000)
 
             if noise_pct > 0:
                 noise = lambda v: v * (1 + random.uniform(-noise_pct, noise_pct))
             else:
                 noise = lambda v: v
 
-            alt = noise(p.altitude)
-            apoapsis = noise(p.apoapsis * 1000) if p.apoapsis else 0
-            periapsis = p.periapsis * 1000 if p.periapsis else -600000
+            if landed:
+                alt = 0.0
+                vel = 0.0
+                v_v = 0.0
+                v_h = 0.0
+                pitch = 0.0
+                phase = "LANDED"
+            else:
+                alt = noise(p.altitude)
+                vel = noise(p.velocity)
+                v_v = noise(p.v_vert)
+                v_h = noise(p.v_horiz)
+                pitch = noise(90.0 - p.pitch_from_v)
+                phase = p.phase
+
+            apoapsis = noise(p.apoapsis * 1000) if p.apoapsis and not landed else 0
+            periapsis = p.periapsis * 1000 if p.periapsis and not landed else 0
 
             srb_burn_time = self._vehicle_cfg.srb_burn_time_s if self._vehicle_cfg else 25.3
             lf_total = 360.0
@@ -655,20 +679,20 @@ class ScriptedTelemetry:
             state = {
                 "connected": True, "simulated": True, "scripted": True,
                 "altitude": alt,
-                "velocity": noise(p.velocity),
-                "v_vert": noise(p.v_vert),
-                "v_horiz": noise(p.v_horiz),
+                "velocity": vel,
+                "v_vert": v_v,
+                "v_horiz": v_h,
                 "apoapsis": apoapsis,
                 "periapsis": periapsis,
-                "pitch": noise(90.0 - p.pitch_from_v),
+                "pitch": pitch,
                 "heading": 90.0,
-                "roll": random.uniform(-2, 2) if noise_pct > 0 else 0.0,
+                "roll": (random.uniform(-2, 2) if noise_pct > 0 else 0.0) if not landed else 0.0,
                 "mission_time": elapsed,
-                "throttle": 1.0 if p.phase in ("BOOST", "CORE") else 0.0,
+                "throttle": 0.0 if landed else (1.0 if p.phase in ("BOOST", "CORE") else 0.0),
                 "liquid_fuel": max(0, lf_total - elapsed * (lf_total / 60)),
                 "solid_fuel": max(0, sf_total - elapsed * (sf_total / srb_burn_time)) if elapsed < srb_burn_time else 0,
-                "atm_density": 1.225 * (2.718 ** (-alt / 5000)) if alt < 70000 else 0,
-                "phase": p.phase,
+                "atm_density": 1.225 if landed else (1.225 * (2.718 ** (-alt / 5000)) if alt < 70000 else 0),
+                "phase": phase,
                 "error": None,
                 "playback": self.get_playback_status(),
             }

@@ -221,6 +221,7 @@ def integrate(
     mass = vehicle.liftoff_mass_t * 1000           # kg
 
     boosters_attached = True
+    core_burned_out = False
     free_turn = False
     step = 0
     drag_loss = 0.0
@@ -228,6 +229,8 @@ def integrate(
 
     booster_sep_event: Optional[SeparationEvent] = None
     core_burnout_pt: Optional[TrajectoryPoint] = None
+    ap_at_burnout: Optional[float] = None
+    pe_at_burnout: Optional[float] = None
     max_q_pt: Optional[TrajectoryPoint] = None
     max_q_val = 0.0
 
@@ -253,8 +256,12 @@ def integrate(
         g = gravity(h)
 
         # --- Engine thrust (engine_thrust_at returns kN, mdot in kg/s) ---
-        T_sw_kN, mdot_sw_kgs = engine_thrust_at(h, "swivel", 1.0)
-        T_sw_N = T_sw_kN * 1000.0      # N
+        if not core_burned_out:
+            T_sw_kN, mdot_sw_kgs = engine_thrust_at(h, "swivel", 1.0)
+            T_sw_N = T_sw_kN * 1000.0      # N
+        else:
+            T_sw_N = 0.0
+            mdot_sw_kgs = 0.0
 
         T_b_N = 0.0; mdot_b_kgs = 0.0
         if boosters_attached and boost_prop > 0.01:
@@ -271,8 +278,12 @@ def integrate(
             max_q_val = q
             max_q_pt = make_point("BOOST" if boosters_attached else "CORE")
 
-        # --- Pitch program ---
-        pg_deg = pitch_program(h)
+        # --- Pitch program (only during powered flight) ---
+        if not core_burned_out:
+            pg_deg = pitch_program(h)
+        else:
+            pg_deg = None
+
         if pg_deg is not None and not free_turn:
             gamma = math.radians(pg_deg)
             dv  = (T_total_N - D_N) / mass - g * math.sin(gamma)
@@ -287,52 +298,75 @@ def integrate(
         # Downrange: horizontal displacement
         ddr = v * math.cos(gamma)
 
-        # Loss bookkeeping
-        drag_loss += (D_N / mass) * dt
-        grav_loss += g * math.sin(gamma) * dt
+        # Loss bookkeeping (only during powered flight)
+        if not core_burned_out:
+            drag_loss += (D_N / mass) * dt
+            grav_loss += g * math.sin(gamma) * dt
 
         # --- Integrate ---
         v     += dv * dt
         h     += dh * dt
         dr    += ddr * dt
-        gamma  = max(gamma + dgamma * dt, 0.0)
-
-        dm_sw = mdot_sw_kgs * dt
-        dm_b  = mdot_b_kgs * dt if boosters_attached else 0.0
-
-        boost_prop -= dm_b
-        core_prop  -= dm_sw
-
-        # --- Booster burnout -> separation ---
-        if boosters_attached and boost_prop <= 0.0:
-            boost_prop = 0.0
-            boosters_attached = False
-            # Jettison dry casing + decouplers
-            mass -= dm_b
-            sep_inert_kg = vehicle.booster_set_dry * 1000
-            mass -= sep_inert_kg
-            ap, pe = orbital_params(h, v, gamma)
-            booster_sep_event = SeparationEvent(
-                t=t, altitude=h, velocity=v, gamma=gamma,
-                mass=mass / 1000.0, apoapsis=ap, periapsis=pe,
-            )
+        if core_burned_out:
+            gamma = gamma + dgamma * dt
         else:
-            mass -= dm_b
+            gamma = max(gamma + dgamma * dt, 0.0)
 
-        mass -= dm_sw
+        if not core_burned_out:
+            dm_sw = mdot_sw_kgs * dt
+            dm_b  = mdot_b_kgs * dt if boosters_attached else 0.0
+
+            boost_prop -= dm_b
+            core_prop  -= dm_sw
+
+            # --- Booster burnout -> separation ---
+            if boosters_attached and boost_prop <= 0.0:
+                boost_prop = 0.0
+                boosters_attached = False
+                mass -= dm_b
+                sep_inert_kg = vehicle.booster_set_dry * 1000
+                mass -= sep_inert_kg
+                ap, pe = orbital_params(h, v, gamma)
+                booster_sep_event = SeparationEvent(
+                    t=t, altitude=h, velocity=v, gamma=gamma,
+                    mass=mass / 1000.0, apoapsis=ap, periapsis=pe,
+                )
+            else:
+                mass -= dm_b
+
+            mass -= dm_sw
+
+            # --- Core burnout -> transition to coast ---
+            if core_prop <= 0.0:
+                core_prop = 0.0
+                core_burned_out = True
+                core_burnout_pt = make_point("CORE")
+                ap_at_burnout, pe_at_burnout = orbital_params(h, v, gamma)
+
         t += dt
         step += 1
 
-        phase = "BOOST" if boosters_attached else "CORE"
+        if core_burned_out:
+            phase = "COAST"
+        elif boosters_attached:
+            phase = "BOOST"
+        else:
+            phase = "CORE"
+
         if step % sample_every_n == 0:
             sampled_pts.append(make_point(phase))
 
-        if core_prop <= 0.0 or h < -100.0:
-            core_burnout_pt = make_point("CORE")
+        if h < -100.0:
+            if not core_burned_out:
+                core_burnout_pt = make_point("CORE")
+                ap_at_burnout, pe_at_burnout = orbital_params(h, v, gamma)
             break
 
-    # Final orbital params
-    ap_final, pe_final = orbital_params(h, v, gamma)
+    # Orbital params at core burnout (not end of coast)
+    if ap_at_burnout is not None:
+        ap_final, pe_final = ap_at_burnout, pe_at_burnout
+    else:
+        ap_final, pe_final = orbital_params(h, v, gamma)
 
     return TrajectoryResult(
         points=sampled_pts,
