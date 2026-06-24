@@ -108,6 +108,40 @@ html,body{width:100%;height:100%;background:var(--mc-bg);color:var(--mc-text);
 #conn-badge.off{color:var(--mc-red-bright);border:1px solid var(--mc-red)}
 
 /* ==========================================================================
+   SIM CONTROLS (top bar, only visible in sim mode)
+   ========================================================================== */
+#sim-controls{
+  display:none;align-items:center;gap:8px;margin-left:8px;
+}
+#sim-controls.visible{display:flex}
+#sim-scenario{
+  font-family:var(--mc-font-mono);font-size:10px;letter-spacing:0.5px;
+  background:var(--mc-panel-alt);color:var(--mc-text);
+  border:1px solid var(--mc-border);border-radius:3px;
+  padding:3px 8px 3px 6px;outline:none;cursor:pointer;
+  -webkit-appearance:none;appearance:none;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%235a7090'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 6px center;
+  padding-right:20px;
+}
+#sim-scenario:hover{border-color:var(--mc-accent)}
+#sim-scenario:focus{border-color:var(--mc-accent);box-shadow:0 0 0 1px var(--mc-accent-dim)}
+#sim-scenario option{background:var(--mc-panel);color:var(--mc-text)}
+.sim-btn{
+  width:26px;height:26px;display:flex;align-items:center;justify-content:center;
+  background:var(--mc-panel-alt);border:1px solid var(--mc-border);border-radius:3px;
+  color:var(--mc-text-dim);cursor:pointer;transition:all 0.15s;padding:0;
+}
+.sim-btn:hover{border-color:var(--mc-accent);color:var(--mc-accent)}
+.sim-btn svg{width:12px;height:12px;fill:currentColor}
+.sim-btn.active{color:var(--mc-yellow-bright);border-color:var(--mc-yellow)}
+#sim-status-label{
+  font-size:9px;letter-spacing:1px;color:var(--mc-text-dim);min-width:50px;text-align:center;
+}
+#sim-status-label.paused{color:var(--mc-yellow-bright)}
+#sim-status-label.finished{color:var(--mc-green-bright)}
+
+/* ==========================================================================
    TELEMETRY PANEL (left)
    ========================================================================== */
 .telem-section{padding:10px 14px;border-bottom:1px solid var(--mc-border)}
@@ -255,6 +289,17 @@ html,body{width:100%;height:100%;background:var(--mc-bg);color:var(--mc-text);
     <span id="mission-name">PERSEUS 1 · MISSION CONTROL</span>
     <div id="met-display">T+ 00:00:00</div>
     <div id="phase-badge">PRELAUNCH</div>
+    <div id="sim-controls">
+      <select id="sim-scenario"></select>
+      <button class="sim-btn" id="sim-play-pause" title="Play / Pause">
+        <svg id="sim-icon-play" viewBox="0 0 24 24"><polygon points="6,4 20,12 6,20"/></svg>
+        <svg id="sim-icon-pause" viewBox="0 0 24 24" style="display:none"><rect x="5" y="4" width="4" height="16"/><rect x="15" y="4" width="4" height="16"/></svg>
+      </button>
+      <button class="sim-btn" id="sim-restart" title="Restart scenario">
+        <svg viewBox="0 0 24 24"><path d="M17.65 6.35A7.96 7.96 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+      </button>
+      <span id="sim-status-label"></span>
+    </div>
     <div style="flex:1"></div>
     <div id="conn-badge" class="off">DISCONNECTED</div>
   </header>
@@ -530,6 +575,8 @@ let latestState = {};       // latest telemetry snapshot
 let latestDirector = {};    // latest flight director output
 let missionStartTime = null;
 let simMode = false;
+let simPaused = false;
+let simFinished = false;
 let _globeViewAlt = 12;
 let _globeZoomMul = 1.0;
 
@@ -599,6 +646,81 @@ socket.on('director_error', data => {
 
 socket.on('disconnect', () => {
   setConnBadge('off', 'DISCONNECTED');
+});
+
+// ---------------------------------------------------------------
+// SIMULATION CONTROLS
+// ---------------------------------------------------------------
+socket.on('sim_status', data => {
+  simMode = true;
+  simPaused = data.paused || false;
+  simFinished = data.finished || false;
+
+  const ctrl = el('sim-controls');
+  if (ctrl) ctrl.classList.add('visible');
+
+  // Populate scenario dropdown (once)
+  const sel = el('sim-scenario');
+  if (sel && data.scenarios && sel.options.length === 0) {
+    for (const [key, label] of Object.entries(data.scenarios)) {
+      const opt = document.createElement('option');
+      opt.value = key;
+      opt.textContent = label;
+      sel.appendChild(opt);
+    }
+  }
+  if (sel) sel.value = data.scenario || 'nominal';
+
+  updateSimControlsUI();
+});
+
+function updateSimControlsUI() {
+  const playIcon = el('sim-icon-play');
+  const pauseIcon = el('sim-icon-pause');
+  const statusLabel = el('sim-status-label');
+  const btn = el('sim-play-pause');
+
+  if (simFinished) {
+    if (playIcon) playIcon.style.display = '';
+    if (pauseIcon) pauseIcon.style.display = 'none';
+    if (statusLabel) { statusLabel.textContent = 'COMPLETE'; statusLabel.className = 'finished'; }
+    if (btn) btn.classList.remove('active');
+  } else if (simPaused) {
+    if (playIcon) playIcon.style.display = '';
+    if (pauseIcon) pauseIcon.style.display = 'none';
+    if (statusLabel) { statusLabel.textContent = 'PAUSED'; statusLabel.className = 'paused'; }
+    if (btn) btn.classList.add('active');
+  } else {
+    if (playIcon) playIcon.style.display = 'none';
+    if (pauseIcon) pauseIcon.style.display = '';
+    if (statusLabel) { statusLabel.textContent = 'RUNNING'; statusLabel.className = ''; }
+    if (btn) btn.classList.remove('active');
+  }
+}
+
+// Wire up controls
+document.addEventListener('DOMContentLoaded', () => {
+  const sel = el('sim-scenario');
+  if (sel) sel.addEventListener('change', () => {
+    actualTraj = [];
+    socket.emit('sim_select_scenario', { scenario: sel.value });
+  });
+
+  const ppBtn = el('sim-play-pause');
+  if (ppBtn) ppBtn.addEventListener('click', () => {
+    if (simFinished) return;
+    if (simPaused) {
+      socket.emit('sim_resume');
+    } else {
+      socket.emit('sim_pause');
+    }
+  });
+
+  const restartBtn = el('sim-restart');
+  if (restartBtn) restartBtn.addEventListener('click', () => {
+    actualTraj = [];
+    socket.emit('sim_restart');
+  });
 });
 
 // ---------------------------------------------------------------

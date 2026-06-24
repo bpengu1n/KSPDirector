@@ -139,6 +139,8 @@ def on_connect():
         full_traj = telemetry_client.get_trajectory()
         if full_traj:
             emit("trajectory_history", {"trajectory": full_traj})
+    if isinstance(telemetry_client, SimulatedTelemetry):
+        emit("sim_status", telemetry_client.get_sim_status())
     emit("connected", {"message": "Perseus 1 Mission Control — connected"})
 
 
@@ -162,6 +164,32 @@ def on_request_nominal():
 def on_clear_trajectory():
     if telemetry_client:
         telemetry_client.clear_trajectory()
+
+
+@socketio.on("sim_select_scenario")
+def on_sim_select_scenario(data):
+    if isinstance(telemetry_client, SimulatedTelemetry):
+        name = data.get("scenario", "nominal") if isinstance(data, dict) else "nominal"
+        telemetry_client.set_scenario(name)
+        logger.info("Scenario changed to: %s", name)
+
+
+@socketio.on("sim_pause")
+def on_sim_pause():
+    if isinstance(telemetry_client, SimulatedTelemetry):
+        telemetry_client.pause()
+
+
+@socketio.on("sim_resume")
+def on_sim_resume():
+    if isinstance(telemetry_client, SimulatedTelemetry):
+        telemetry_client.resume()
+
+
+@socketio.on("sim_restart")
+def on_sim_restart():
+    if isinstance(telemetry_client, SimulatedTelemetry):
+        telemetry_client.restart()
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +281,9 @@ def main(argv=None):
     else:
         logger.info("No --ksp-host given — starting in SIMULATION mode")
         telemetry_client = SimulatedTelemetry(rate_ms=args.rate)
+
+    if isinstance(telemetry_client, SimulatedTelemetry):
+        telemetry_client._sim_status_callback = lambda s: socketio.emit("sim_status", s)
 
     telemetry_client.start()
 

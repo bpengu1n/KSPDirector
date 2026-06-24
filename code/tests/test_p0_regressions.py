@@ -195,12 +195,12 @@ class TestP002SimFuelDrain(unittest.TestCase):
         # With the fix applied, lf_buggy still = 4000 (local formula).
         # The real code is in SimulatedTelemetry. Verify it via source inspection.
         import inspect
-        from mission_control.telemachus_client import SimulatedTelemetry
-        src = inspect.getsource(SimulatedTelemetry._run)
+        from mission_control.telemachus_client import _build_ascent_keyframes
+        src = inspect.getsource(_build_ascent_keyframes)
         self.assertNotIn('4000', src,
-            "SimulatedTelemetry must not reference 4000. Fix: change 4000→360.")
+            "Keyframe builder must not reference 4000. Fix: change 4000→360.")
         self.assertIn('360', src,
-            "SimulatedTelemetry must reference 360 (correct LF max).")
+            "Keyframe builder must reference 360 (correct LF max).")
 
     def test_p002_simulated_sf_starts_at_correct_max(self):
         """
@@ -212,12 +212,12 @@ class TestP002SimFuelDrain(unittest.TestCase):
         sf_buggy   = max(0, 600 - elapsed * (600 / 25)) if elapsed < 25 else 0
         sf_correct = max(0, 160 - elapsed * (160 / 25.3)) if elapsed < 25.3 else 0
         import inspect
-        from mission_control.telemachus_client import SimulatedTelemetry as ST2
-        src2 = inspect.getsource(ST2._run)
+        from mission_control.telemachus_client import _build_ascent_keyframes as bak
+        src2 = inspect.getsource(bak)
         self.assertNotIn('600 -', src2,
-            "SimulatedTelemetry must not use '600 -'. Fix: change 600→160.")
+            "Keyframe builder must not use '600 -'. Fix: change 600→160.")
         self.assertIn('160', src2,
-            "SimulatedTelemetry must reference 160 (correct SolidFuel max).")
+            "Keyframe builder must reference 160 (correct SolidFuel max).")
 
     def test_p002_lf_reads_zero_after_burnout_not_before(self):
         """
@@ -361,11 +361,11 @@ class TestP004PitchConvention(unittest.TestCase):
         self.assertAlmostEqual(correct_output, 90.0, delta=0.5,
             msg="KSP convention: straight up = 90°. Formula 90-pitch_from_v is correct.")
         # Confirm the source uses the correct formula
-        from mission_control.telemachus_client import SimulatedTelemetry
+        from mission_control.telemachus_client import _build_ascent_keyframes
         import inspect
-        src = inspect.getsource(SimulatedTelemetry._run)
+        src = inspect.getsource(_build_ascent_keyframes)
         self.assertIn("90.0 - p.pitch_from_v", src,
-            "SimulatedTelemetry._run must convert using '90.0 - p.pitch_from_v'. "
+            "Keyframe builder must convert using '90.0 - p.pitch_from_v'. "
             "Fix: change pitch output to noise(90.0 - p.pitch_from_v).")
 
     # -- Second order: advisory engine receives wrong pitch value --

@@ -303,17 +303,337 @@ class TelematicusClient:
                 pass
 
 
+# ---------------------------------------------------------------------------
+# Simulation scenarios
+# ---------------------------------------------------------------------------
+# Each scenario is a list of keyframes: (t, state_dict_overrides).
+# The sim interpolates between keyframes for smooth playback.
+# Boost + Core phases reuse the actual sim trajectory; post-burnout
+# phases are synthetic (the sim doesn't model Terrier).
+
+import random as _random
+
+def _lerp(a, b, f):
+    """Linear interpolation between a and b by fraction f."""
+    return a + (b - a) * f
+
+
+def _build_ascent_keyframes(nom_pts, noise_pct=0.02, pitch_bias=0.0,
+                            vel_scale=1.0):
+    """Convert nominal sim TrajectoryPoints into keyframe dicts."""
+    kf = []
+    for p in nom_pts:
+        n = lambda v: v * (1 + _random.uniform(-noise_pct, noise_pct))
+        alt = n(p.altitude * vel_scale) if vel_scale != 1.0 else n(p.altitude)
+        vel = n(p.velocity * vel_scale)
+        apo = n(p.apoapsis * 1000) if p.apoapsis else 0
+        per = p.periapsis * 1000 if p.periapsis else -600000
+        kf.append({
+            "t": p.t,
+            "altitude": alt,
+            "velocity": vel,
+            "v_vert": n(p.v_vert * vel_scale),
+            "v_horiz": n(p.v_horiz * vel_scale),
+            "apoapsis": apo,
+            "periapsis": per,
+            "pitch": n(90.0 - p.pitch_from_v) + pitch_bias,
+            "heading": 90.0,
+            "roll": _random.uniform(-2, 2),
+            "throttle": 1.0 if p.phase in ("BOOST", "CORE") else 0.0,
+            "liquid_fuel": max(0, 360 - p.t * (360 / 60)),
+            "solid_fuel": max(0, 160 - p.t * (160 / 25.3)) if p.t < 25.3 else 0,
+            "phase": p.phase,
+            "downrange": p.downrange,
+        })
+    return kf
+
+
+def _interp_keyframes(keyframes, t):
+    """Interpolate between two keyframes at time t. Returns a state dict."""
+    if not keyframes:
+        return None
+    if t <= keyframes[0]["t"]:
+        return dict(keyframes[0])
+    if t >= keyframes[-1]["t"]:
+        return dict(keyframes[-1])
+    for i in range(len(keyframes) - 1):
+        if keyframes[i]["t"] <= t <= keyframes[i + 1]["t"]:
+            a, b = keyframes[i], keyframes[i + 1]
+            dt = b["t"] - a["t"]
+            f = (t - a["t"]) / dt if dt > 0 else 0
+            result = {}
+            for k in a:
+                va, vb = a[k], b.get(k, a[k])
+                if isinstance(va, (int, float)) and isinstance(vb, (int, float)):
+                    result[k] = _lerp(va, vb, f)
+                else:
+                    result[k] = va if f < 0.5 else vb
+            return result
+    return dict(keyframes[-1])
+
+
+def _scenario_nominal(nom_pts):
+    """Nominal: full orbit insertion. Boost → Core → Coast → Terrier → Orbit."""
+    kf = _build_ascent_keyframes(nom_pts)
+    last = kf[-1]
+    t0 = last["t"]
+    # Coast phase: T+61 to T+130 (coast to apoapsis ~24.6 km)
+    coast_kf = [
+        {"t": t0 + 1, "altitude": 15200, "velocity": 640, "v_vert": 380, "v_horiz": 510,
+         "apoapsis": 24600, "periapsis": -587000, "pitch": 37.0, "heading": 90.0,
+         "roll": 0.3, "throttle": 0.0, "liquid_fuel": 0, "solid_fuel": 0,
+         "phase": "COAST", "downrange": 9000},
+        {"t": t0 + 30, "altitude": 22000, "velocity": 580, "v_vert": 120, "v_horiz": 565,
+         "apoapsis": 24600, "periapsis": -587000, "pitch": 12.0, "heading": 90.0,
+         "roll": 0.1, "throttle": 0.0, "liquid_fuel": 0, "solid_fuel": 0,
+         "phase": "COAST", "downrange": 24000},
+        {"t": t0 + 55, "altitude": 24500, "velocity": 560, "v_vert": 10, "v_horiz": 560,
+         "apoapsis": 24700, "periapsis": -587000, "pitch": 1.0, "heading": 90.0,
+         "roll": 0.0, "throttle": 0.0, "liquid_fuel": 0, "solid_fuel": 0,
+         "phase": "COAST", "downrange": 40000},
+    ]
+    # Terrier ignition at apoapsis (~T+120), burn to orbit
+    # Terrier Isp_vac=345s, thrust=60kN, mission stage ~6.3t
+    # LF remaining: mission stage has FL-T800 = 360 units
+    terrier_kf = [
+        {"t": t0 + 60, "altitude": 24400, "velocity": 560, "v_vert": -5, "v_horiz": 560,
+         "apoapsis": 24600, "periapsis": -587000, "pitch": 0.0, "heading": 90.0,
+         "roll": 0.0, "throttle": 1.0, "liquid_fuel": 360, "solid_fuel": 0,
+         "phase": "TERRIER", "downrange": 42000},
+        {"t": t0 + 100, "altitude": 30000, "velocity": 900, "v_vert": 30, "v_horiz": 900,
+         "apoapsis": 45000, "periapsis": -200000, "pitch": 2.0, "heading": 90.0,
+         "roll": 0.1, "throttle": 1.0, "liquid_fuel": 280, "solid_fuel": 0,
+         "phase": "TERRIER", "downrange": 70000},
+        {"t": t0 + 150, "altitude": 55000, "velocity": 1400, "v_vert": 40, "v_horiz": 1400,
+         "apoapsis": 68000, "periapsis": 10000, "pitch": 1.5, "heading": 90.0,
+         "roll": 0.0, "throttle": 1.0, "liquid_fuel": 180, "solid_fuel": 0,
+         "phase": "TERRIER", "downrange": 120000},
+        {"t": t0 + 200, "altitude": 75000, "velocity": 1900, "v_vert": 15, "v_horiz": 1900,
+         "apoapsis": 80000, "periapsis": 55000, "pitch": 0.5, "heading": 90.0,
+         "roll": 0.0, "throttle": 1.0, "liquid_fuel": 90, "solid_fuel": 0,
+         "phase": "TERRIER", "downrange": 200000},
+        {"t": t0 + 240, "altitude": 79800, "velocity": 2270, "v_vert": 2, "v_horiz": 2270,
+         "apoapsis": 80200, "periapsis": 79500, "pitch": 0.1, "heading": 90.0,
+         "roll": 0.0, "throttle": 0.0, "liquid_fuel": 30, "solid_fuel": 0,
+         "phase": "ORBIT", "downrange": 300000},
+    ]
+    # Stable orbit hold
+    orbit_kf = [
+        {"t": t0 + 260, "altitude": 80000, "velocity": 2279, "v_vert": 0, "v_horiz": 2279,
+         "apoapsis": 80200, "periapsis": 79800, "pitch": 0.0, "heading": 90.0,
+         "roll": 0.0, "throttle": 0.0, "liquid_fuel": 28, "solid_fuel": 0,
+         "phase": "ORBIT", "downrange": 340000},
+        {"t": t0 + 300, "altitude": 80000, "velocity": 2279, "v_vert": 0, "v_horiz": 2279,
+         "apoapsis": 80100, "periapsis": 79900, "pitch": 0.0, "heading": 90.0,
+         "roll": 0.0, "throttle": 0.0, "liquid_fuel": 28, "solid_fuel": 0,
+         "phase": "ORBIT", "downrange": 400000},
+    ]
+    return kf + coast_kf + terrier_kf + orbit_kf, t0 + 300
+
+
+def _scenario_subnominal(nom_pts):
+    """Sub-nominal: degraded performance, still achieves orbit."""
+    kf = _build_ascent_keyframes(nom_pts, noise_pct=0.03, pitch_bias=-3.0)
+    last = kf[-1]
+    t0 = last["t"]
+    # Slightly worse burnout: lower apoapsis, needs more Terrier work
+    ext_kf = [
+        {"t": t0 + 1, "altitude": 14000, "velocity": 600, "v_vert": 340, "v_horiz": 480,
+         "apoapsis": 20000, "periapsis": -600000, "pitch": 35.0, "heading": 90.0,
+         "roll": 1.5, "throttle": 0.0, "liquid_fuel": 0, "solid_fuel": 0,
+         "phase": "COAST", "downrange": 8000},
+        {"t": t0 + 40, "altitude": 19500, "velocity": 530, "v_vert": 60, "v_horiz": 527,
+         "apoapsis": 20200, "periapsis": -600000, "pitch": 6.5, "heading": 90.0,
+         "roll": 0.5, "throttle": 0.0, "liquid_fuel": 0, "solid_fuel": 0,
+         "phase": "COAST", "downrange": 28000},
+        # Terrier ignition (earlier, lower)
+        {"t": t0 + 50, "altitude": 19800, "velocity": 530, "v_vert": -10, "v_horiz": 530,
+         "apoapsis": 20000, "periapsis": -600000, "pitch": -1.0, "heading": 90.0,
+         "roll": 0.0, "throttle": 1.0, "liquid_fuel": 360, "solid_fuel": 0,
+         "phase": "TERRIER", "downrange": 33000},
+        {"t": t0 + 120, "altitude": 35000, "velocity": 1000, "v_vert": 50, "v_horiz": 1000,
+         "apoapsis": 50000, "periapsis": -100000, "pitch": 3.0, "heading": 90.0,
+         "roll": 0.2, "throttle": 1.0, "liquid_fuel": 230, "solid_fuel": 0,
+         "phase": "TERRIER", "downrange": 80000},
+        {"t": t0 + 200, "altitude": 65000, "velocity": 1700, "v_vert": 25, "v_horiz": 1700,
+         "apoapsis": 75000, "periapsis": 30000, "pitch": 0.8, "heading": 90.0,
+         "roll": 0.0, "throttle": 1.0, "liquid_fuel": 100, "solid_fuel": 0,
+         "phase": "TERRIER", "downrange": 170000},
+        # Achieves orbit but eccentric
+        {"t": t0 + 260, "altitude": 76000, "velocity": 2250, "v_vert": 3, "v_horiz": 2250,
+         "apoapsis": 78000, "periapsis": 72000, "pitch": 0.1, "heading": 90.0,
+         "roll": 0.0, "throttle": 0.0, "liquid_fuel": 8, "solid_fuel": 0,
+         "phase": "ORBIT", "downrange": 280000},
+        {"t": t0 + 310, "altitude": 75500, "velocity": 2255, "v_vert": -1, "v_horiz": 2255,
+         "apoapsis": 78000, "periapsis": 72000, "pitch": 0.0, "heading": 90.0,
+         "roll": 0.0, "throttle": 0.0, "liquid_fuel": 8, "solid_fuel": 0,
+         "phase": "ORBIT", "downrange": 350000},
+    ]
+    return kf + ext_kf, t0 + 310
+
+
+def _scenario_abort(nom_pts):
+    """Engine failure at T+42s, successful abort and capsule recovery."""
+    kf = _build_ascent_keyframes(nom_pts)
+    # Truncate at T+42s (core phase, Swivel failure)
+    kf = [k for k in kf if k["t"] <= 42.0]
+    last = kf[-1] if kf else kf[0]
+    # Swivel fails — thrust drops, vehicle starts tumbling
+    abort_kf = [
+        {"t": 42.5, "altitude": last["altitude"], "velocity": last["velocity"] * 0.98,
+         "v_vert": last["v_vert"] * 0.95, "v_horiz": last["v_horiz"],
+         "apoapsis": last["apoapsis"], "periapsis": last["periapsis"],
+         "pitch": last["pitch"] - 5, "heading": 88.0, "roll": 8.0,
+         "throttle": 0.2, "liquid_fuel": 200, "solid_fuel": 0,
+         "phase": "ABORT", "downrange": last["downrange"]},
+        {"t": 44.0, "altitude": last["altitude"] + 300, "velocity": last["velocity"] * 0.9,
+         "v_vert": last["v_vert"] * 0.7, "v_horiz": last["v_horiz"] * 0.85,
+         "apoapsis": last["apoapsis"] * 0.9, "periapsis": -620000,
+         "pitch": last["pitch"] - 15, "heading": 85.0, "roll": 25.0,
+         "throttle": 0.0, "liquid_fuel": 195, "solid_fuel": 0,
+         "phase": "ABORT", "downrange": last["downrange"] + 500},
+        # Abort separation — capsule separates, LES fires
+        {"t": 46.0, "altitude": last["altitude"] + 500, "velocity": 350,
+         "v_vert": 200, "v_horiz": 270,
+         "apoapsis": last["apoapsis"] * 0.6, "periapsis": -630000,
+         "pitch": 40.0, "heading": 88.0, "roll": 5.0,
+         "throttle": 0.0, "liquid_fuel": 0, "solid_fuel": 0,
+         "phase": "ABORT", "downrange": last["downrange"] + 1000},
+        # Ballistic arc — capsule coasting up then down
+        {"t": 60.0, "altitude": last["altitude"] + 2000, "velocity": 280,
+         "v_vert": 100, "v_horiz": 260,
+         "apoapsis": last["apoapsis"] * 0.5, "periapsis": -640000,
+         "pitch": 21.0, "heading": 89.0, "roll": 2.0,
+         "throttle": 0.0, "liquid_fuel": 0, "solid_fuel": 0,
+         "phase": "ABORT", "downrange": last["downrange"] + 5000},
+        {"t": 80.0, "altitude": last["altitude"], "velocity": 250,
+         "v_vert": -30, "v_horiz": 245,
+         "apoapsis": last["apoapsis"] * 0.4, "periapsis": -640000,
+         "pitch": -7.0, "heading": 89.5, "roll": 1.0,
+         "throttle": 0.0, "liquid_fuel": 0, "solid_fuel": 0,
+         "phase": "ABORT", "downrange": last["downrange"] + 12000},
+        {"t": 110.0, "altitude": 6000, "velocity": 220,
+         "v_vert": -120, "v_horiz": 180,
+         "apoapsis": 0, "periapsis": -640000,
+         "pitch": -33.0, "heading": 89.5, "roll": 0.5,
+         "throttle": 0.0, "liquid_fuel": 0, "solid_fuel": 0,
+         "phase": "ABORT", "downrange": last["downrange"] + 22000},
+        # Parachute deploy at ~5 km
+        {"t": 120.0, "altitude": 4500, "velocity": 180,
+         "v_vert": -100, "v_horiz": 150,
+         "apoapsis": 0, "periapsis": -640000,
+         "pitch": -33.0, "heading": 89.5, "roll": 0.0,
+         "throttle": 0.0, "liquid_fuel": 0, "solid_fuel": 0,
+         "phase": "CHUTE", "downrange": last["downrange"] + 25000},
+        # Under chute — slow descent
+        {"t": 140.0, "altitude": 2500, "velocity": 12,
+         "v_vert": -8, "v_horiz": 9,
+         "apoapsis": 0, "periapsis": -640000,
+         "pitch": -50.0, "heading": 90.0, "roll": 0.0,
+         "throttle": 0.0, "liquid_fuel": 0, "solid_fuel": 0,
+         "phase": "CHUTE", "downrange": last["downrange"] + 26000},
+        {"t": 170.0, "altitude": 200, "velocity": 8,
+         "v_vert": -7, "v_horiz": 3,
+         "apoapsis": 0, "periapsis": -640000,
+         "pitch": -70.0, "heading": 90.0, "roll": 0.0,
+         "throttle": 0.0, "liquid_fuel": 0, "solid_fuel": 0,
+         "phase": "CHUTE", "downrange": last["downrange"] + 26500},
+        # Splashdown
+        {"t": 180.0, "altitude": 0, "velocity": 6,
+         "v_vert": -6, "v_horiz": 1,
+         "apoapsis": 0, "periapsis": 0,
+         "pitch": -85.0, "heading": 90.0, "roll": 0.0,
+         "throttle": 0.0, "liquid_fuel": 0, "solid_fuel": 0,
+         "phase": "LANDED", "downrange": last["downrange"] + 26600},
+    ]
+    return kf + abort_kf, 180.0
+
+
+def _scenario_catastrophic(nom_pts):
+    """Structural failure at max-Q (~T+15s). Loss of vehicle."""
+    kf = _build_ascent_keyframes(nom_pts)
+    kf = [k for k in kf if k["t"] <= 15.0]
+    last = kf[-1] if kf else kf[0]
+    # Max-Q structural failure — rapid tumble, breakup
+    fail_kf = [
+        {"t": 15.5, "altitude": last["altitude"], "velocity": last["velocity"] * 1.02,
+         "v_vert": last["v_vert"], "v_horiz": last["v_horiz"],
+         "apoapsis": last["apoapsis"], "periapsis": last["periapsis"],
+         "pitch": last["pitch"] + 10, "heading": 85.0, "roll": 30.0,
+         "throttle": 1.0, "liquid_fuel": 300, "solid_fuel": 80,
+         "phase": "ABORT", "downrange": last["downrange"]},
+        {"t": 16.5, "altitude": last["altitude"] + 100, "velocity": last["velocity"] * 0.8,
+         "v_vert": last["v_vert"] * 0.5, "v_horiz": last["v_horiz"] * 0.6,
+         "apoapsis": last["apoapsis"] * 0.5, "periapsis": -640000,
+         "pitch": last["pitch"] + 45, "heading": 70.0, "roll": 120.0,
+         "throttle": 0.0, "liquid_fuel": 280, "solid_fuel": 70,
+         "phase": "ABORT", "downrange": last["downrange"] + 100},
+        {"t": 18.0, "altitude": last["altitude"] - 200, "velocity": last["velocity"] * 0.5,
+         "v_vert": -50, "v_horiz": last["v_horiz"] * 0.3,
+         "apoapsis": 0, "periapsis": -640000,
+         "pitch": -20.0, "heading": 45.0, "roll": -90.0,
+         "throttle": 0.0, "liquid_fuel": 260, "solid_fuel": 60,
+         "phase": "ABORT", "downrange": last["downrange"] + 200},
+        # Debris falling
+        {"t": 22.0, "altitude": last["altitude"] - 1500, "velocity": 180,
+         "v_vert": -150, "v_horiz": 100,
+         "apoapsis": 0, "periapsis": -640000,
+         "pitch": -56.0, "heading": 30.0, "roll": 45.0,
+         "throttle": 0.0, "liquid_fuel": 0, "solid_fuel": 0,
+         "phase": "LOV", "downrange": last["downrange"] + 500},
+        {"t": 30.0, "altitude": max(100, last["altitude"] - 4000), "velocity": 200,
+         "v_vert": -190, "v_horiz": 60,
+         "apoapsis": 0, "periapsis": -640000,
+         "pitch": -72.0, "heading": 20.0, "roll": 0.0,
+         "throttle": 0.0, "liquid_fuel": 0, "solid_fuel": 0,
+         "phase": "LOV", "downrange": last["downrange"] + 800},
+        {"t": 40.0, "altitude": 0, "velocity": 210,
+         "v_vert": -210, "v_horiz": 10,
+         "apoapsis": 0, "periapsis": 0,
+         "pitch": -89.0, "heading": 15.0, "roll": 0.0,
+         "throttle": 0.0, "liquid_fuel": 0, "solid_fuel": 0,
+         "phase": "LOV", "downrange": last["downrange"] + 900},
+    ]
+    return kf + fail_kf, 40.0
+
+
+SCENARIOS = {
+    "nominal": {
+        "label": "Nominal — Full Orbit",
+        "builder": _scenario_nominal,
+    },
+    "subnominal": {
+        "label": "Sub-nominal — Degraded Orbit",
+        "builder": _scenario_subnominal,
+    },
+    "abort": {
+        "label": "Engine Failure — Abort & Recovery",
+        "builder": _scenario_abort,
+    },
+    "catastrophic": {
+        "label": "Max-Q Breakup — Loss of Vehicle",
+        "builder": _scenario_catastrophic,
+    },
+}
+
+
 class SimulatedTelemetry:
     """
     Stand-in for TelematicusClient when no KSP game is running.
-    Plays back the nominal trajectory with slight noise, allowing
+    Plays back scenario-driven telemetry with slight noise, allowing
     the mission control interface to be developed and tested offline.
+
+    Supports multiple selectable scenarios, play/pause, and restart.
 
     Usage::
 
         client = SimulatedTelemetry()
         client.start()
         state = client.get_state()   # same interface as TelematicusClient
+        client.set_scenario('abort')
+        client.pause()
+        client.resume()
+        client.restart()
     """
 
     def __init__(self, rate_ms: int = 200, noise_pct: float = 0.02):
@@ -328,8 +648,16 @@ class SimulatedTelemetry:
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self.on_update: Optional[Callable[[dict], None]] = None
-        self._nom_traj = None
+        self._nom_pts = None
         self._start_time = None
+
+        self._scenario_name = "nominal"
+        self._keyframes = []
+        self._scenario_duration = 300.0
+        self._paused = False
+        self._pause_elapsed = 0.0
+        self._finished = False
+        self._sim_status_callback: Optional[Callable[[dict], None]] = None
 
     def _load_nominal(self):
         """Load the nominal trajectory from the sim package."""
@@ -338,6 +666,14 @@ class SimulatedTelemetry:
         from sim import run_ascent
         result = run_ascent()
         return result.points
+
+    def _build_scenario(self, name):
+        """Build keyframes for the named scenario."""
+        if self._nom_pts is None:
+            self._nom_pts = self._load_nominal()
+        builder = SCENARIOS[name]["builder"]
+        kf, duration = builder(self._nom_pts)
+        return kf, duration
 
     def get_state(self) -> dict:
         with self._lock:
@@ -351,6 +687,51 @@ class SimulatedTelemetry:
         with self._trajectory_lock:
             self._trajectory.clear()
 
+    def get_sim_status(self) -> dict:
+        return {
+            "scenario": self._scenario_name,
+            "paused": self._paused,
+            "finished": self._finished,
+            "scenarios": {k: v["label"] for k, v in SCENARIOS.items()},
+        }
+
+    def set_scenario(self, name: str):
+        """Switch to a different scenario and restart."""
+        if name not in SCENARIOS:
+            return
+        self._scenario_name = name
+        self.restart()
+
+    def pause(self):
+        if not self._paused and not self._finished:
+            self._paused = True
+            self._pause_elapsed = time.time() - self._start_time if self._start_time else 0
+            self._notify_status()
+
+    def resume(self):
+        if self._paused and not self._finished:
+            self._paused = False
+            self._start_time = time.time() - self._pause_elapsed
+            self._notify_status()
+
+    def restart(self):
+        """Restart current scenario from T+0."""
+        self._finished = False
+        self._paused = False
+        self._keyframes, self._scenario_duration = self._build_scenario(self._scenario_name)
+        self._start_time = time.time()
+        self._pause_elapsed = 0.0
+        with self._trajectory_lock:
+            self._trajectory.clear()
+        self._notify_status()
+
+    def _notify_status(self):
+        if self._sim_status_callback:
+            try:
+                self._sim_status_callback(self.get_sim_status())
+            except Exception:
+                pass
+
     def start(self):
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._run, daemon=True,
@@ -363,75 +744,76 @@ class SimulatedTelemetry:
             self._thread.join(timeout=3.0)
 
     def _run(self):
-        import random
         try:
-            pts = self._load_nominal()
+            self._nom_pts = self._load_nominal()
         except Exception as e:
             logger.error("SimulatedTelemetry: could not load nominal: %s", e)
             return
 
+        self._keyframes, self._scenario_duration = self._build_scenario(self._scenario_name)
         self._start_time = time.time()
-        pt_idx = 0
+        self._notify_status()
 
         while not self._stop_event.is_set():
+            if self._paused or self._finished:
+                time.sleep(self.rate_ms / 1000.0)
+                continue
+
             elapsed = time.time() - self._start_time
-            # Fix P2-06: if elapsed resets (e.g., start_time was reset externally),
-            # clear the trajectory so the new simulated flight starts clean.
+
+            # Fix P2-06: detect trajectory reset
             with self._trajectory_lock:
                 if (elapsed < 1.0 and self._trajectory and
                         self._trajectory[-1]["t"] > 30.0):
                     self._trajectory.clear()
-            # Advance through nominal points up to current elapsed time
-            while pt_idx + 1 < len(pts) and pts[pt_idx + 1].t <= elapsed:
-                pt_idx += 1
 
-            if pt_idx >= len(pts):
-                pt_idx = len(pts) - 1
+            # Check for scenario completion
+            if elapsed >= self._scenario_duration:
+                elapsed = self._scenario_duration
+                if not self._finished:
+                    self._finished = True
+                    self._notify_status()
 
-            p = pts[pt_idx]
-            noise = lambda v: v * (1 + random.uniform(-self.noise_pct, self.noise_pct))
+            kf_state = _interp_keyframes(self._keyframes, elapsed)
+            if kf_state is None:
+                time.sleep(self.rate_ms / 1000.0)
+                continue
 
-            alt = noise(p.altitude)
-            apoapsis = noise(p.apoapsis * 1000) if p.apoapsis else 0
-            periapsis = p.periapsis * 1000 if p.periapsis else -600000
+            alt = kf_state.get("altitude", 0)
+            apo = kf_state.get("apoapsis", 0)
+            per = kf_state.get("periapsis", -600000)
 
             state = {
                 "connected": True, "simulated": True,
                 "altitude": alt,
-                "velocity": noise(p.velocity),
-                "v_vert": noise(p.v_vert),
-                "v_horiz": noise(p.v_horiz),
-                "apoapsis": apoapsis,
-                "periapsis": periapsis,
-                # Fix P0-04: convert to KSP / Telemachus pitch convention
-                # KSP convention: +90° = straight up, 0° = horizontal
-                # sim stores pitch_from_v: 0° = straight up, 90° = horizontal
-                # These are complementary: ksp_pitch = 90 - pitch_from_v
-                "pitch": noise(90.0 - p.pitch_from_v),
-                "heading": 90.0,
-                "roll": random.uniform(-2, 2),
+                "velocity": kf_state.get("velocity", 0),
+                "v_vert": kf_state.get("v_vert", 0),
+                "v_horiz": kf_state.get("v_horiz", 0),
+                "apoapsis": apo,
+                "periapsis": per,
+                "pitch": kf_state.get("pitch", 0),
+                "heading": kf_state.get("heading", 90),
+                "roll": kf_state.get("roll", 0),
                 "mission_time": elapsed,
-                "throttle": 1.0 if p.phase in ("BOOST", "CORE") else 0.0,
-                # Fix P0-02: correct KSP unit values
-                # LiquidFuel: FL-T800 = 360 units (1.8t at 0.005 t/unit, 9:11 LF:OX)
-                # SolidFuel:  2x Hammer = 160 units (2 × 80; each 0.60t at 0.0075 t/unit)
-                "liquid_fuel": max(0, 360 - elapsed * (360 / 60)),
-                "solid_fuel":  max(0, 160 - elapsed * (160 / 25.3)) if elapsed < 25.3 else 0,
-                "atm_density": 1.225 * (2.718 ** (-alt / 5000)) if alt < 70000 else 0,
-                "phase": p.phase,
+                "throttle": kf_state.get("throttle", 0),
+                "liquid_fuel": kf_state.get("liquid_fuel", 0),
+                "solid_fuel": kf_state.get("solid_fuel", 0),
+                "atm_density": 1.225 * (2.718 ** (-alt / 5000)) if 0 < alt < 70000 else 0,
+                "phase": kf_state.get("phase", "CORE"),
                 "error": None,
             }
 
             with self._lock:
                 self._state = state
 
+            dr = kf_state.get("downrange", 0)
             traj_point = {
                 "t": elapsed,
                 "altitude_km": alt / 1000.0,
-                "downrange_km": p.downrange / 1000.0,
+                "downrange_km": dr / 1000.0,
                 "velocity": state["velocity"],
-                "apoapsis_km": apoapsis / 1000.0,
-                "periapsis_km": periapsis / 1000.0,
+                "apoapsis_km": apo / 1000.0,
+                "periapsis_km": per / 1000.0,
                 "pitch": state["pitch"],
             }
             with self._trajectory_lock:
