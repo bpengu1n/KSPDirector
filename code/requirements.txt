@@ -1,0 +1,17 @@
+# Perseus 1 Mission Pack — Python dependencies
+# Install with: pip install -r requirements.txt
+
+# Mission control server
+flask>=3.0
+flask-socketio>=5.3
+eventlet>=0.35            # async backend for flask-socketio
+
+# Telemachus WebSocket client
+websocket-client>=1.7
+
+# Simulation utilities (all stdlib except below)
+# No additional dependencies for sim/ — pure Python 3.10+
+
+# Optional: for running diagram generation
+# (only needed if regenerating SVG sheets)
+# No extra deps — diagrams use stdlib only

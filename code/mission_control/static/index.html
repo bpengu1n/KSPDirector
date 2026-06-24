@@ -1,0 +1,1076 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>PERSEUS 1 · MISSION CONTROL</title>
+<!-- Socket.IO — real-time data relay from server.py -->
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+<style>
+/* ==========================================================================
+   CSS CUSTOM PROPERTIES
+   All colours use --mc-* so Houston UI or other hosts can override them
+   by injecting a :root { } block after this stylesheet.
+   ========================================================================== */
+:root {
+  --mc-bg:           #07090e;
+  --mc-panel:        #0e1420;
+  --mc-panel-alt:    #111927;
+  --mc-border:       #1a2540;
+  --mc-accent:       #1e88e5;
+  --mc-accent-dim:   rgba(30,136,229,0.18);
+  --mc-text:         #d8e0f0;
+  --mc-text-dim:     #5a7090;
+  --mc-text-bright:  #ffffff;
+  --mc-green:        #2e7d32;
+  --mc-green-bright: #66bb6a;
+  --mc-yellow:       #e65100;
+  --mc-yellow-bright:#ffa726;
+  --mc-red:          #b71c1c;
+  --mc-red-bright:   #ef5350;
+  --mc-violet:       #6a1b9a;
+  --mc-violet-bright:#ab47bc;
+  --mc-teal:         #00695c;
+  --mc-teal-bright:  #26a69a;
+  --mc-abort:        #c62828;
+  --mc-font-mono:    'Courier New', 'Consolas', monospace;
+  --mc-font-ui:      'Segoe UI', system-ui, sans-serif;
+}
+
+/* ==========================================================================
+   RESET + BASE
+   ========================================================================== */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{width:100%;height:100%;background:var(--mc-bg);color:var(--mc-text);
+  font-family:var(--mc-font-mono);overflow:hidden}
+
+/* ==========================================================================
+   LAYOUT
+   ========================================================================== */
+#shell{
+  display:grid;
+  grid-template-rows:56px 1fr 44px;
+  grid-template-columns:280px 1fr 290px;
+  width:100vw;height:100vh;
+  gap:1px;background:var(--mc-border);
+}
+
+/* Top bar spans all 3 columns */
+#topbar{
+  grid-column:1/-1;
+  display:flex;align-items:center;gap:24px;
+  background:var(--mc-panel);padding:0 20px;
+  border-bottom:1px solid var(--mc-border);
+}
+
+/* Left: telemetry */
+#left-panel{
+  grid-row:2;grid-column:1;
+  background:var(--mc-panel);overflow-y:auto;
+  display:flex;flex-direction:column;gap:1px;
+}
+
+/* Center: visualisations */
+#center-panel{
+  grid-row:2;grid-column:2;
+  background:var(--mc-bg);
+  display:grid;grid-template-rows:1fr 1fr;gap:1px;
+}
+
+/* Right: director */
+#right-panel{
+  grid-row:2;grid-column:3;
+  background:var(--mc-panel);display:flex;flex-direction:column;gap:1px;
+}
+
+/* Bottom timeline bar */
+#timeline-bar{
+  grid-column:1/-1;
+  background:var(--mc-panel);border-top:1px solid var(--mc-border);
+  display:flex;align-items:center;padding:0 12px;gap:8px;
+}
+
+/* ==========================================================================
+   TOP BAR
+   ========================================================================== */
+#mission-name{font-size:13px;font-weight:700;letter-spacing:2px;color:var(--mc-accent)}
+#met-display{font-size:22px;letter-spacing:3px;color:var(--mc-text-bright);min-width:100px}
+#phase-badge{
+  font-size:11px;font-weight:700;letter-spacing:1.5px;padding:4px 10px;border-radius:3px;
+  background:var(--mc-accent-dim);color:var(--mc-accent);border:1px solid var(--mc-accent);
+}
+#conn-badge{
+  margin-left:auto;font-size:10px;letter-spacing:1px;padding:3px 9px;border-radius:2px;
+  background:var(--mc-panel-alt);
+}
+#conn-badge.live{color:var(--mc-green-bright);border:1px solid var(--mc-green)}
+#conn-badge.sim{color:var(--mc-yellow-bright);border:1px solid var(--mc-yellow)}
+#conn-badge.off{color:var(--mc-red-bright);border:1px solid var(--mc-red)}
+
+/* ==========================================================================
+   TELEMETRY PANEL (left)
+   ========================================================================== */
+.telem-section{padding:10px 14px;border-bottom:1px solid var(--mc-border)}
+.telem-section-title{
+  font-size:8.5px;letter-spacing:2px;color:var(--mc-text-dim);margin-bottom:8px;text-transform:uppercase
+}
+.telem-row{
+  display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px
+}
+.telem-label{font-size:9.5px;color:var(--mc-text-dim);letter-spacing:0.5px}
+.telem-value{
+  font-size:15px;font-weight:700;color:var(--mc-text-bright);letter-spacing:0.5px;
+  transition:color 0.2s
+}
+.telem-value.good{color:var(--mc-green-bright)}
+.telem-value.warn{color:var(--mc-yellow-bright)}
+.telem-value.bad{color:var(--mc-red-bright)}
+.telem-unit{font-size:9px;color:var(--mc-text-dim);margin-left:2px}
+
+/* Fuel bar */
+.fuel-bar-wrap{margin-top:4px}
+.fuel-bar-bg{height:5px;background:rgba(255,255,255,0.08);border-radius:2px;overflow:hidden}
+.fuel-bar-fill{height:100%;border-radius:2px;transition:width 0.5s;background:var(--mc-teal-bright)}
+
+/* ==========================================================================
+   CANVAS PANELS (center)
+   ========================================================================== */
+.canvas-panel{position:relative;background:var(--mc-bg)}
+.canvas-panel canvas{width:100%;height:100%;display:block}
+.canvas-label{
+  position:absolute;top:8px;left:10px;font-size:8px;letter-spacing:1.5px;
+  color:var(--mc-text-dim);text-transform:uppercase;pointer-events:none
+}
+.canvas-legend{
+  position:absolute;top:8px;right:10px;display:flex;flex-direction:column;gap:4px;
+  font-size:8px;letter-spacing:0.5px;pointer-events:none
+}
+.legend-item{display:flex;align-items:center;gap:6px}
+.legend-dot{width:16px;height:2px;border-radius:1px}
+
+/* ==========================================================================
+   RIGHT PANEL — Advisory + Gates
+   ========================================================================== */
+
+/* Advisory box */
+#advisory-box{
+  margin:10px;border-radius:4px;padding:12px 14px;border:1.5px solid var(--mc-border);
+  transition:background 0.3s,border-color 0.3s;
+}
+#advisory-box.NOMINAL{background:rgba(46,125,50,0.12);border-color:var(--mc-green)}
+#advisory-box.CAUTION{background:rgba(230,81,0,0.12);border-color:var(--mc-yellow)}
+#advisory-box.WARNING{background:rgba(183,28,28,0.15);border-color:var(--mc-red)}
+#advisory-box.ABORT{background:rgba(198,40,40,0.25);border-color:#ff1744;
+  animation:abort-pulse 0.6s ease-in-out infinite alternate}
+@keyframes abort-pulse{from{box-shadow:0 0 0 transparent}to{box-shadow:0 0 14px #ff1744}}
+
+#advisory-level{font-size:8.5px;letter-spacing:2px;margin-bottom:6px}
+#advisory-level.NOMINAL{color:var(--mc-green-bright)}
+#advisory-level.CAUTION{color:var(--mc-yellow-bright)}
+#advisory-level.WARNING,#advisory-level.ABORT{color:var(--mc-red-bright)}
+#advisory-action{font-size:14px;font-weight:700;color:var(--mc-text-bright);margin-bottom:5px;line-height:1.3}
+#advisory-reason{font-size:9.5px;color:var(--mc-text-dim);line-height:1.4}
+
+/* Gates */
+#gates-section{padding:10px 14px;border-top:1px solid var(--mc-border)}
+.gates-title{font-size:8.5px;letter-spacing:2px;color:var(--mc-text-dim);margin-bottom:8px}
+.gate-row{
+  display:flex;align-items:center;gap:8px;margin-bottom:7px;
+}
+.gate-indicator{
+  width:8px;height:8px;border-radius:50%;flex-shrink:0;
+  border:1px solid currentColor;
+}
+.gate-indicator.GO{background:var(--mc-green-bright);color:var(--mc-green-bright)}
+.gate-indicator.MARGINAL{background:var(--mc-yellow-bright);color:var(--mc-yellow-bright)}
+.gate-indicator.NO-GO{background:var(--mc-red-bright);color:var(--mc-red-bright)}
+.gate-indicator.NOT-YET{background:transparent;color:var(--mc-text-dim)}
+.gate-phase{font-size:9px;letter-spacing:0.5px;min-width:75px;color:var(--mc-text-dim)}
+.gate-status-text{font-size:9px;font-weight:700}
+.gate-status-text.GO{color:var(--mc-green-bright)}
+.gate-status-text.MARGINAL{color:var(--mc-yellow-bright)}
+.gate-status-text.NO-GO{color:var(--mc-red-bright)}
+.gate-status-text.NOT-YET{color:var(--mc-text-dim)}
+.gate-detail{font-size:8.5px;color:var(--mc-text-dim);margin-left:auto}
+
+/* Nominal comparison */
+#nominal-section{
+  padding:10px 14px;border-top:1px solid var(--mc-border);
+  flex:1;overflow-y:auto;
+}
+.nom-title{font-size:8.5px;letter-spacing:2px;color:var(--mc-text-dim);margin-bottom:8px}
+.nom-row{display:flex;justify-content:space-between;margin-bottom:5px;font-size:9.5px}
+.nom-label{color:var(--mc-text-dim)}
+.nom-pair{display:flex;gap:10px}
+.nom-actual{color:var(--mc-green-bright)}
+.nom-nominal{color:rgba(30,136,229,0.7)}
+.nom-delta{}
+.nom-delta.ok{color:var(--mc-green-bright)}
+.nom-delta.warn{color:var(--mc-yellow-bright)}
+.nom-delta.bad{color:var(--mc-red-bright)}
+
+/* ==========================================================================
+   TIMELINE BAR (bottom)
+   ========================================================================== */
+#timeline-bar{overflow:hidden}
+#timeline-canvas{flex:1;height:32px}
+#tl-labels{display:flex;gap:20px;font-size:9px;color:var(--mc-text-dim);white-space:nowrap}
+
+/* ==========================================================================
+   SCROLLBAR
+   ========================================================================== */
+::-webkit-scrollbar{width:4px}
+::-webkit-scrollbar-thumb{background:var(--mc-border);border-radius:2px}
+::-webkit-scrollbar-track{background:transparent}
+</style>
+</head>
+<body>
+
+<!-- ============================================================
+     LAYOUT SHELL
+     data-panel attributes enable Houston UI to pick individual
+     panels for embedding: ?panel=globe or ?panel=telemetry etc.
+     ============================================================ -->
+
+<!-- P2-03: Loading overlay — shown until nominal trajectory arrives -->
+<div id="loading-overlay" style="
+  position:fixed;inset:0;background:rgba(7,9,14,0.92);z-index:1000;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  font-family:var(--mc-font-mono);color:var(--mc-text-dim);
+">
+  <div style="font-size:11px;letter-spacing:3px;margin-bottom:12px">PERSEUS 1 MISSION CONTROL</div>
+  <div id="loading-msg" style="font-size:14px;letter-spacing:1px;color:var(--mc-accent)">COMPUTING NOMINAL TRAJECTORY…</div>
+  <div style="margin-top:20px;width:200px;height:3px;background:rgba(30,136,229,0.2);border-radius:2px;overflow:hidden">
+    <div id="loading-bar" style="width:0%;height:100%;background:var(--mc-accent);
+         animation:load-pulse 1.4s ease-in-out infinite;border-radius:2px"></div>
+  </div>
+</div>
+<style>
+@keyframes load-pulse{0%{width:0%}50%{width:80%}100%{width:100%}}
+</style>
+<div id="shell">
+
+  <!-- TOP BAR -->
+  <header id="topbar" data-panel="topbar">
+    <span id="mission-name">PERSEUS 1 · MISSION CONTROL</span>
+    <div id="met-display">T+ 00:00:00</div>
+    <div id="phase-badge">PRELAUNCH</div>
+    <div style="flex:1"></div>
+    <div id="conn-badge" class="off">DISCONNECTED</div>
+  </header>
+
+  <!-- LEFT — TELEMETRY -->
+  <section id="left-panel" data-panel="telemetry">
+
+    <div class="telem-section">
+      <div class="telem-section-title">Altitude & Velocity</div>
+      <div class="telem-row">
+        <span class="telem-label">ALTITUDE</span>
+        <span><span class="telem-value" id="t-alt">—</span><span class="telem-unit">km</span></span>
+      </div>
+      <div class="telem-row">
+        <span class="telem-label">VELOCITY</span>
+        <span><span class="telem-value" id="t-vel">—</span><span class="telem-unit">m/s</span></span>
+      </div>
+      <div class="telem-row">
+        <span class="telem-label">VERT SPEED</span>
+        <span><span class="telem-value" id="t-vvert">—</span><span class="telem-unit">m/s</span></span>
+      </div>
+      <div class="telem-row">
+        <span class="telem-label">HORIZ SPEED</span>
+        <span><span class="telem-value" id="t-vhoriz">—</span><span class="telem-unit">m/s</span></span>
+      </div>
+    </div>
+
+    <div class="telem-section">
+      <div class="telem-section-title">Orbit</div>
+      <div class="telem-row">
+        <span class="telem-label">APOAPSIS</span>
+        <span><span class="telem-value" id="t-apo">—</span><span class="telem-unit">km</span></span>
+      </div>
+      <div class="telem-row">
+        <span class="telem-label">PERIAPSIS</span>
+        <span><span class="telem-value" id="t-pe">—</span><span class="telem-unit">km</span></span>
+      </div>
+      <div class="telem-row">
+        <span class="telem-label">INCLINATION</span>
+        <span><span class="telem-value" id="t-inc">—</span><span class="telem-unit">°</span></span>
+      </div>
+    </div>
+
+    <div class="telem-section">
+      <div class="telem-section-title">Attitude</div>
+      <div class="telem-row">
+        <span class="telem-label">PITCH</span>
+        <span><span class="telem-value" id="t-pitch">—</span><span class="telem-unit">° from horiz</span></span>
+      </div>
+      <div class="telem-row">
+        <span class="telem-label">HEADING</span>
+        <span><span class="telem-value" id="t-hdg">—</span><span class="telem-unit">°</span></span>
+      </div>
+      <div class="telem-row">
+        <span class="telem-label">ROLL</span>
+        <span><span class="telem-value" id="t-roll">—</span><span class="telem-unit">°</span></span>
+      </div>
+    </div>
+
+    <div class="telem-section">
+      <div class="telem-section-title">Propulsion</div>
+      <div class="telem-row">
+        <span class="telem-label">THROTTLE</span>
+        <span><span class="telem-value" id="t-thr">—</span><span class="telem-unit">%</span></span>
+      </div>
+      <div class="telem-row">
+        <span class="telem-label">LIQUID FUEL</span>
+        <span><span class="telem-value" id="t-lf">—</span><span class="telem-unit">u</span></span>
+      </div>
+      <div class="fuel-bar-wrap">
+        <div class="fuel-bar-bg"><div class="fuel-bar-fill" id="lf-bar" style="width:0%"></div></div>
+      </div>
+      <div class="telem-row" style="margin-top:6px">
+        <span class="telem-label">SOLID FUEL</span>
+        <span><span class="telem-value" id="t-sf">—</span><span class="telem-unit">u</span></span>
+      </div>
+      <div class="fuel-bar-wrap">
+        <div class="fuel-bar-bg"><div class="fuel-bar-fill" id="sf-bar" style="width:0%;background:var(--mc-violet-bright)"></div></div>
+      </div>
+    </div>
+
+    <div class="telem-section">
+      <div class="telem-section-title">Environment</div>
+      <div class="telem-row">
+        <span class="telem-label">ATM DENSITY</span>
+        <span><span class="telem-value" id="t-atm">—</span><span class="telem-unit">kg/m³</span></span>
+      </div>
+      <div class="telem-row">
+        <span class="telem-label">MISSION TIME</span>
+        <span><span class="telem-value" id="t-met2">—</span></span>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- CENTER — VISUALISATIONS -->
+  <main id="center-panel">
+
+    <!-- Globe view -->
+    <div class="canvas-panel" data-panel="globe">
+      <canvas id="globe-canvas"></canvas>
+      <div class="canvas-label">TRAJECTORY OVERVIEW · KERBIN GLOBE</div>
+      <div class="canvas-legend">
+        <div class="legend-item">
+          <div class="legend-dot" style="background:rgba(30,136,229,0.7);border-top:2px dashed rgba(30,136,229,0.7)"></div>
+          <span style="font-size:8px;color:var(--mc-text-dim)">NOMINAL</span>
+        </div>
+        <div class="legend-item">
+          <div class="legend-dot" style="background:#66bb6a"></div>
+          <span style="font-size:8px;color:var(--mc-text-dim)">ACTUAL</span>
+        </div>
+        <div class="legend-item">
+          <div class="legend-dot" style="background:rgba(239,83,80,0.7);border-top:2px dashed rgba(239,83,80,0.6)"></div>
+          <span style="font-size:8px;color:var(--mc-text-dim)">ABORT</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Trajectory plot (altitude vs downrange) -->
+    <div class="canvas-panel" data-panel="trajectory">
+      <canvas id="traj-canvas"></canvas>
+      <div class="canvas-label">ALTITUDE vs DOWNRANGE · CORE ASCENT PHASE</div>
+    </div>
+
+  </main>
+
+  <!-- RIGHT — DIRECTOR -->
+  <section id="right-panel" data-panel="director">
+
+    <!-- Advisory -->
+    <div style="padding:10px 10px 0">
+      <div style="font-size:8.5px;letter-spacing:2px;color:var(--mc-text-dim);margin-bottom:6px">FLIGHT DIRECTOR ADVISORY</div>
+    </div>
+    <div id="advisory-box" class="NOMINAL">
+      <div id="advisory-level" class="NOMINAL">NOMINAL</div>
+      <div id="advisory-action">STANDING BY</div>
+      <div id="advisory-reason">Awaiting launch</div>
+    </div>
+
+    <!-- Go/No-Go gates -->
+    <div id="gates-section">
+      <div class="gates-title">GO / NO-GO GATES</div>
+      <div id="gates-list">
+        <!-- Populated by JS -->
+      </div>
+    </div>
+
+    <!-- Nominal comparison -->
+    <div id="nominal-section">
+      <div class="nom-title">ACTUAL vs NOMINAL</div>
+      <div id="nom-compare">
+        <!-- Populated by JS -->
+      </div>
+    </div>
+
+  </section>
+
+  <!-- BOTTOM — TIMELINE -->
+  <footer id="timeline-bar" data-panel="timeline">
+    <canvas id="timeline-canvas"></canvas>
+  </footer>
+
+</div><!-- #shell -->
+
+<!-- ============================================================
+     JAVASCRIPT
+     ============================================================ -->
+<script>
+'use strict';
+
+// ---------------------------------------------------------------
+// CONSTANTS (mirrors sim/constants.py)
+// ---------------------------------------------------------------
+
+// P2-09: Canvas dimension cache — avoids layout-thrash from getBoundingClientRect
+// on every animation frame tick. Invalidated on window resize.
+const _canvasSizes = {};
+function getCanvasSize(id) {
+  if (!_canvasSizes[id]) {
+    const canvas = el(id);
+    if (!canvas) return {w: 800, h: 400};
+    const rect = canvas.parentElement.getBoundingClientRect();
+    _canvasSizes[id] = {w: Math.max(1, rect.width), h: Math.max(1, rect.height)};
+  }
+  return _canvasSizes[id];
+}
+function invalidateCanvasSizes() {
+  Object.keys(_canvasSizes).forEach(k => delete _canvasSizes[k]);
+}
+const R_KM = 600;         // Kerbin radius km
+const ATM_CEIL_KM = 70;   // atmosphere ceiling km
+const CIRC_SPEED_80KM = 2279; // m/s, circular orbit at 80km
+
+// ---------------------------------------------------------------
+// GLOBAL STATE
+// ---------------------------------------------------------------
+let nominalTraj = [];       // [{altitude_km, downrange_km, velocity, ...}]
+let actualTraj  = [];       // accumulated from telemetry
+let latestState = {};       // latest telemetry snapshot
+let latestDirector = {};    // latest flight director output
+let missionStartTime = null;
+let simMode = false;
+
+// ---------------------------------------------------------------
+// SOCKET.IO CONNECTION
+// ---------------------------------------------------------------
+const socket = io({ transports: ['websocket', 'polling'] });
+
+socket.on('connect', () => {
+  console.log('Socket.IO connected');
+  socket.emit('request_nominal');
+});
+
+socket.on('connected', data => {
+  console.log('Server:', data.message);
+});
+
+socket.on('nominal', data => {
+  // P2-03: hide loading overlay now that nominal data has arrived
+  const overlay = el('loading-overlay');
+  if (overlay) overlay.style.display = 'none';
+  nominalTraj = data.trajectory || [];
+  console.log('Nominal trajectory received:', nominalTraj.length, 'points');
+  renderAll();
+});
+
+// Fix P1-04: restore full flight-path history when browser reconnects mid-flight
+socket.on('trajectory_history', data => {
+  const hist = data.trajectory || [];
+  if (hist.length > actualTraj.length) {
+    actualTraj = hist;
+    console.log('Trajectory history restored:', actualTraj.length, 'points');
+    renderAll();
+  }
+});
+
+socket.on('telemetry', data => {
+  latestState  = data.state || {};
+  // Append new actual trajectory points
+  const newPts = data.trajectory || [];
+  newPts.forEach(pt => {
+    if (!actualTraj.length || pt.t > actualTraj[actualTraj.length-1].t) {
+      actualTraj.push(pt);
+    }
+  });
+  if (latestState.simulated) simMode = true;
+  updateTelemetryPanel();
+  renderAll();
+});
+
+socket.on('director', data => {
+  latestDirector = data;
+  updateDirectorPanel();
+});
+
+
+socket.on('director_error', data => {
+  // P2-07: surface director errors in the UI instead of hiding them
+  console.error('Director error:', data.message);
+  el('advisory-action').textContent = 'DIRECTOR OFFLINE';
+  el('advisory-reason').textContent = data.message || 'Internal error — see server log';
+  const box = el('advisory-box');
+  if (box) box.className = 'WARNING';
+});
+
+socket.on('disconnect', () => {
+  setConnBadge('off', 'DISCONNECTED');
+});
+
+// ---------------------------------------------------------------
+// TELEMETRY PANEL
+// ---------------------------------------------------------------
+function fmtNum(v, dec=0) {
+  if (v == null || v === undefined) return '—';
+  return Number(v).toFixed(dec);
+}
+function fmtKm(m) { return m == null ? '—' : (m/1000).toFixed(1); }
+
+function colorClass(val, good, warn) {
+  if (val == null) return '';
+  if (val >= good) return 'good';
+  if (val >= warn) return 'warn';
+  return 'bad';
+}
+
+function updateTelemetryPanel() {
+  const s = latestState;
+  const alt_m = s.altitude || 0;
+  const apo_m = s.apoapsis || 0;
+  const pe_m  = s.periapsis || 0;
+  const met   = s.mission_time || 0;
+
+  // MET clock
+  // met already set from latestState.mission_time above
+  const metStr = formatMET(met);
+  el('met-display').textContent = metStr;
+  el('t-met2').textContent = metStr;
+
+  // Connection badge
+  if (s.connected) {
+    setConnBadge(simMode ? 'sim' : 'live', simMode ? 'SIM MODE' : 'TELEMACHUS LIVE');
+  } else {
+    setConnBadge('off', 'DISCONNECTED');
+  }
+
+  // Phase badge
+  if (latestDirector.phase) {
+    el('phase-badge').textContent = latestDirector.phase;
+  }
+
+  // Altitude & velocity
+  setVal('t-alt', (alt_m/1000).toFixed(2), colorClass(alt_m, 0, 0));
+  setVal('t-vel', fmtNum(s.velocity, 0), '');
+  setVal('t-vvert', fmtNum(s.v_vert, 0), '');
+  setVal('t-vhoriz', fmtNum(s.v_horiz, 0), colorClass(s.v_horiz, 1500, 500));
+
+  // Orbit
+  const apo_km = apo_m / 1000;
+  const pe_km  = pe_m  / 1000;
+  setVal('t-apo', apo_km.toFixed(1), colorClass(apo_km, 70, 30));
+  setVal('t-pe',  pe_km.toFixed(0),  pe_km > 70 ? 'good' : pe_km > -100 ? '' : 'bad');
+  setVal('t-inc', fmtNum(s.inclination, 1), '');
+
+  // Attitude (KSP pitch: +90=up, 0=horizontal, -90=down)
+  setVal('t-pitch', fmtNum(s.pitch, 1), '');
+  setVal('t-hdg',   fmtNum(s.heading, 1), '');
+  setVal('t-roll',  fmtNum(s.roll, 1), '');
+
+  // Propulsion
+  const thr = s.throttle != null ? (s.throttle*100).toFixed(0) : '—';
+  setVal('t-thr', thr, '');
+  const lf = s.liquid_fuel || 0;
+  const sf = s.solid_fuel || 0;
+  const lfMax = 4000, sfMax = 600;
+  setVal('t-lf', lf.toFixed(0), colorClass(lf, lfMax*0.5, lfMax*0.2));
+  setVal('t-sf', sf.toFixed(0), '');
+  el('lf-bar').style.width = Math.max(0, Math.min(100, lf/lfMax*100)) + '%';
+  el('sf-bar').style.width = Math.max(0, Math.min(100, sf/sfMax*100)) + '%';
+
+  // Environment
+  setVal('t-atm', fmtNum(s.atm_density, 4), '');
+}
+
+// ---------------------------------------------------------------
+// DIRECTOR PANEL
+// ---------------------------------------------------------------
+function updateDirectorPanel() {
+  const d = latestDirector;
+  if (!d || !d.advisory) return;
+
+  const adv = d.advisory;
+  playAdvisoryAlert(adv.level);  // P3-02
+  const box = el('advisory-box');
+  box.className = adv.level;
+  el('advisory-level').className = adv.level;
+  el('advisory-level').textContent = adv.level;
+  el('advisory-action').textContent = adv.action || '';
+  el('advisory-reason').textContent = adv.reason || '';
+
+  // Gates
+  if (d.gates && d.gates.length) {
+    el('gates-list').innerHTML = d.gates.map(g => `
+      <div class="gate-row">
+        <div class="gate-indicator ${g.status}"></div>
+        <span class="gate-phase">${g.phase}</span>
+        <span class="gate-status-text ${g.status}">${g.status}</span>
+        <span class="gate-detail">${g.detail || ''}</span>
+      </div>
+    `).join('');
+  }
+
+  // Nominal comparison
+  const s = latestState;
+  const nom = d.nominal_at_alt || d.nominal_at_time;
+  if (nom) {
+    const rows = [
+      { label: 'ALTITUDE', actual: (s.altitude||0)/1000, nom: nom.altitude_km, unit: 'km', dec: 1 },
+      { label: 'VELOCITY', actual: s.velocity||0, nom: nom.velocity, unit: 'm/s', dec: 0 },
+      { label: 'APOAPSIS', actual: (s.apoapsis||0)/1000, nom: nom.apoapsis_km, unit: 'km', dec: 1 },
+      { label: 'PITCH(V)', actual: 90-(s.pitch||0), nom: nom.pitch_from_vertical, unit: '°', dec: 0 },
+    ];
+    el('nom-compare').innerHTML = rows.map(r => {
+      if (r.nom == null) return '';
+      const delta = r.actual - r.nom;
+      const deltaClass = Math.abs(delta) < r.nom*0.1 ? 'ok' : Math.abs(delta) < r.nom*0.25 ? 'warn' : 'bad';
+      const sign = delta > 0 ? '+' : '';
+      return `<div class="nom-row">
+        <span class="nom-label">${r.label}</span>
+        <div class="nom-pair">
+          <span class="nom-actual">${r.actual.toFixed(r.dec)}</span>
+          <span class="nom-nominal">${r.nom.toFixed(r.dec)}</span>
+          <span class="nom-delta ${deltaClass}">${sign}${delta.toFixed(r.dec)}${r.unit}</span>
+        </div>
+      </div>`;
+    }).join('');
+  }
+}
+
+// ---------------------------------------------------------------
+// CANVAS: KERBIN GLOBE
+// ---------------------------------------------------------------
+function drawGlobe() {
+  const canvas = el('globe-canvas');
+  const {w: W, h: H} = getCanvasSize('globe-canvas');  // P2-09: cached
+  if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
+  const ctx = canvas.getContext('2d');
+  const cx = W * 0.42, cy = H * 0.56;
+
+  // Scale: show out to ~220km altitude
+  const maxAlt_km = 220;
+  const scale = Math.min(W, H) * 0.36 / (R_KM + maxAlt_km);
+  const R_px = R_KM * scale;
+
+  // Space background
+  ctx.fillStyle = '#050810';
+  ctx.fillRect(0, 0, W, H);
+
+  // Stars (deterministic)
+  ctx.fillStyle = 'rgba(200,215,255,0.5)';
+  for (let i = 0; i < 120; i++) {
+    const sx = ((i * 137 + 31) % W);
+    const sy = ((i * 97 + 53) % H);
+    const sr = (i % 3 === 0) ? 1.2 : 0.7;
+    ctx.beginPath(); ctx.arc(sx, sy, sr, 0, Math.PI*2); ctx.fill();
+  }
+
+  // Atmosphere glow (70km band)
+  const atmR_px = (R_KM + ATM_CEIL_KM) * scale;
+  const atmGrad = ctx.createRadialGradient(cx, cy, R_px * 0.97, cx, cy, atmR_px * 1.02);
+  atmGrad.addColorStop(0,   'rgba(80,180,255,0.22)');
+  atmGrad.addColorStop(0.5, 'rgba(60,140,220,0.10)');
+  atmGrad.addColorStop(1,   'rgba(40,100,200,0.00)');
+  ctx.beginPath(); ctx.arc(cx, cy, atmR_px * 1.02, 0, Math.PI*2);
+  ctx.fillStyle = atmGrad; ctx.fill();
+
+  // Kerbin body
+  const kGrad = ctx.createRadialGradient(cx - R_px*0.2, cy - R_px*0.2, R_px*0.1, cx, cy, R_px);
+  kGrad.addColorStop(0, '#2196F3');
+  kGrad.addColorStop(0.5, '#1565C0');
+  kGrad.addColorStop(1, '#0D3B8A');
+  ctx.beginPath(); ctx.arc(cx, cy, R_px, 0, Math.PI*2);
+  ctx.fillStyle = kGrad; ctx.fill();
+  ctx.strokeStyle = 'rgba(100,180,255,0.3)'; ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Atmosphere circle outline
+  ctx.beginPath(); ctx.arc(cx, cy, atmR_px, 0, Math.PI*2);
+  ctx.strokeStyle = 'rgba(100,200,255,0.15)'; ctx.lineWidth = 1;
+  ctx.setLineDash([3, 4]); ctx.stroke(); ctx.setLineDash([]);
+
+  // Coordinate conversion: (downrange_km, altitude_km) → canvas (x, y)
+  // Launch from top of Kerbin (12 o'clock), trajectory goes clockwise (eastward)
+  function toXY(dr_km, alt_km) {
+    const r = (R_KM + alt_km) * scale;
+    const angle = dr_km / R_KM;   // radians
+    return [cx + r * Math.sin(angle), cy - r * Math.cos(angle)];
+  }
+
+  // Launch site marker
+  const [lsx, lsy] = toXY(0, 0);
+  ctx.beginPath(); ctx.arc(lsx, lsy, 3.5, 0, Math.PI*2);
+  ctx.fillStyle = '#FFD700'; ctx.fill();
+
+  // Helper: draw a trajectory path
+  function drawPath(pts, color, dash, lineW, closedGlowColor) {
+    if (!pts || pts.length < 2) return;
+    ctx.beginPath();
+    pts.forEach((pt, i) => {
+      const [x, y] = toXY(pt.downrange_km, pt.altitude_km);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.strokeStyle = color;
+    ctx.setLineDash(dash);
+    ctx.lineWidth = lineW;
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // Nominal trajectory (dashed blue)
+  drawPath(nominalTraj, 'rgba(30,136,229,0.5)', [6, 5], 1.5);
+
+  // Abort projection: if periapsis is very negative, show where capsule lands
+  const pe_km = (latestState.periapsis || 0) / 1000;
+  if (pe_km < -50 && actualTraj.length > 0 && latestState.altitude > 0) {
+    // Simple abort arc: project from current position downward along a parabola
+    // Draw a curve back to the surface (rough: current alt → 0, at same downrange angle)
+    const last = actualTraj[actualTraj.length - 1];
+    const abortPts = [];
+    for (let i = 0; i <= 20; i++) {
+      const f = i / 20;
+      const alt = last.altitude_km * (1 - f * f);          // parabolic descent
+      const dr  = last.downrange_km + f * last.altitude_km * 0.3; // rough downrange
+      if (alt >= 0) abortPts.push({ altitude_km: alt, downrange_km: dr });
+    }
+    drawPath(abortPts, 'rgba(239,83,80,0.55)', [5, 4], 1.5);
+    // Landing zone marker
+    if (abortPts.length) {
+      const lp = abortPts[abortPts.length - 1];
+      const [lx, ly] = toXY(lp.downrange_km, lp.altitude_km);
+      ctx.beginPath(); ctx.arc(lx, ly, 5, 0, Math.PI*2);
+      ctx.fillStyle = 'rgba(239,83,80,0.4)'; ctx.fill();
+      ctx.strokeStyle = 'rgba(239,83,80,0.8)'; ctx.lineWidth = 1.5; ctx.stroke();
+    }
+  }
+
+  // Actual trajectory (solid green)
+  drawPath(actualTraj, '#43a047', [], 2);
+
+  // Current position marker
+  if (actualTraj.length > 0 && (latestState.altitude || 0) > 100) {
+    const last = actualTraj[actualTraj.length - 1];
+    const [px, py] = toXY(last.downrange_km, last.altitude_km);
+    // Glow
+    const grd = ctx.createRadialGradient(px, py, 0, px, py, 9);
+    grd.addColorStop(0, 'rgba(105,240,174,0.5)');
+    grd.addColorStop(1, 'transparent');
+    ctx.beginPath(); ctx.arc(px, py, 9, 0, Math.PI*2);
+    ctx.fillStyle = grd; ctx.fill();
+    // Dot
+    ctx.beginPath(); ctx.arc(px, py, 4, 0, Math.PI*2);
+    ctx.fillStyle = '#69f0ae'; ctx.fill();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.stroke();
+  }
+
+
+  // P3-03: SIM MODE watermark — clearly distinguish sim from live data
+  if (latestState.simulated) {
+    ctx.save();
+    ctx.translate(W/2, H/2);
+    ctx.rotate(-Math.PI/6);
+    ctx.font = 'bold 28px var(--mc-font-mono)';
+    ctx.fillStyle = 'rgba(251,140,0,0.12)';
+    ctx.textAlign = 'center';
+    ctx.fillText('SIMULATION', 0, 0);
+    ctx.restore();
+  }
+  // Altitude rings at 10, 50, 80km
+  [10, 50, 80].forEach(alt_km => {
+    const rr = (R_KM + alt_km) * scale;
+    ctx.beginPath(); ctx.arc(cx, cy, rr, 0, Math.PI*2);
+    const alpha = alt_km === 80 ? 0.25 : 0.10;
+    ctx.strokeStyle = `rgba(255,255,255,${alpha})`; ctx.lineWidth = 0.5;
+    ctx.setLineDash([2, 6]); ctx.stroke(); ctx.setLineDash([]);
+    // Label
+    ctx.fillStyle = `rgba(255,255,255,${alpha * 1.5})`;
+    ctx.font = '8px var(--mc-font-mono)';
+    ctx.fillText(`${alt_km}km`, cx + 4, cy - rr + 10);
+  });
+}
+
+// ---------------------------------------------------------------
+// CANVAS: TRAJECTORY PLOT (altitude vs downrange)
+// ---------------------------------------------------------------
+function drawTrajectoryPlot() {
+  const canvas = el('traj-canvas');
+  const {w: W, h: H} = getCanvasSize('traj-canvas');  // P2-09: cached
+  if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
+  const ctx = canvas.getContext('2d');
+
+  ctx.fillStyle = '#07090e';
+  ctx.fillRect(0, 0, W, H);
+
+  const pad = { l: 46, r: 16, t: 32, b: 36 };
+  const gw = W - pad.l - pad.r;
+  const gh = H - pad.t - pad.b;
+
+  // Auto-range from data
+  const allPts = [...nominalTraj, ...actualTraj];
+  const maxDR  = Math.max(10, ...allPts.map(p => p.downrange_km || 0)) * 1.08;
+  const maxAlt = Math.max(18, ...allPts.map(p => p.altitude_km  || 0)) * 1.08;
+
+  function px(dr)  { return pad.l + (dr / maxDR)  * gw; }
+  function py(alt) { return H - pad.b - (alt / maxAlt) * gh; }
+
+  // Grid lines
+  ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+  ctx.lineWidth = 0.5;
+  ctx.font = '8px var(--mc-font-mono)';
+  ctx.fillStyle = 'rgba(90,112,144,0.8)';
+
+  const altStep = maxAlt < 30 ? 5 : 10;
+  for (let a = 0; a <= maxAlt; a += altStep) {
+    const y = py(a);
+    ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(W - pad.r, y); ctx.stroke();
+    ctx.fillText(`${a}`, pad.l - 6, y + 3);
+  }
+  const drStep = maxDR < 12 ? 2 : 5;
+  for (let d = 0; d <= maxDR; d += drStep) {
+    const x = px(d);
+    ctx.beginPath(); ctx.moveTo(x, pad.t); ctx.lineTo(x, H - pad.b); ctx.stroke();
+    ctx.fillText(`${d}`, x - 4, H - pad.b + 14);
+  }
+
+  // Axis labels
+  ctx.fillStyle = 'rgba(90,112,144,0.9)';
+  ctx.font = '8.5px var(--mc-font-mono)';
+  ctx.fillText('ALT (km)', 4, pad.t + gh / 2);
+  ctx.fillText('DOWNRANGE (km)', pad.l + gw / 2 - 40, H - 4);
+
+  // Atmosphere ceiling line
+  if (ATM_CEIL_KM < maxAlt) {
+    const ya = py(ATM_CEIL_KM);
+    ctx.beginPath(); ctx.moveTo(pad.l, ya); ctx.lineTo(W - pad.r, ya);
+    ctx.strokeStyle = 'rgba(80,150,255,0.2)'; ctx.lineWidth = 1;
+    ctx.setLineDash([3, 5]); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = 'rgba(80,150,255,0.35)';
+    ctx.fillText('ATM', W - pad.r + 2 > W - 30 ? W - 34 : W - pad.r - 26, ya - 3);
+  }
+
+  // Helper: draw trajectory
+  function drawTraj(pts, color, dash, lw) {
+    if (!pts || pts.length < 2) return;
+    ctx.beginPath();
+    pts.forEach((pt, i) => {
+      const x = px(pt.downrange_km || 0);
+      const y = py(pt.altitude_km  || 0);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.strokeStyle = color; ctx.setLineDash(dash); ctx.lineWidth = lw;
+    ctx.stroke(); ctx.setLineDash([]);
+  }
+
+  // Nominal
+  drawTraj(nominalTraj, 'rgba(30,136,229,0.5)', [6, 5], 1.5);
+
+  // Actual
+  drawTraj(actualTraj, '#43a047', [], 2);
+
+  // Current position
+  if (actualTraj.length > 0 && (latestState.altitude || 0) > 100) {
+    const last = actualTraj[actualTraj.length - 1];
+    const x = px(last.downrange_km || 0), y = py(last.altitude_km || 0);
+    ctx.beginPath(); ctx.arc(x, y, 4.5, 0, Math.PI*2);
+    ctx.fillStyle = '#69f0ae'; ctx.fill();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.stroke();
+  }
+
+  // Event markers from nominal (booster sep, burnout)
+  const nomMarkers = [
+    { dr: 0.18, alt: 2.64, label: 'SEP', color: '#ab47bc' },
+    { dr: 8.23, alt: 14.81, label: 'B/O', color: '#ef5350' },
+  ];
+  nomMarkers.forEach(m => {
+    if (m.dr <= maxDR && m.alt <= maxAlt) {
+      const x = px(m.dr), y = py(m.alt);
+      ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI*2);
+      ctx.fillStyle = 'transparent'; ctx.strokeStyle = m.color; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.fillStyle = m.color;
+      ctx.font = '8px var(--mc-font-mono)';
+      ctx.fillText(m.label, x + 5, y - 4);
+    }
+  });
+}
+
+// ---------------------------------------------------------------
+// CANVAS: TIMELINE BAR
+// ---------------------------------------------------------------
+function drawTimeline() {
+  const canvas = el('timeline-canvas');
+  const rect = canvas.parentElement.getBoundingClientRect();
+  if (canvas.width !== rect.width || canvas.height !== rect.height) {
+    canvas.width = rect.width;
+    canvas.height = rect.height;
+  }
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+
+  ctx.fillStyle = '#0e1420';
+  ctx.fillRect(0, 0, W, H);
+
+  // P3-08: Telemachus mission_time is authoritative; wall-clock is fallback only
+  const met = latestState.mission_time || 0;
+  const TOTAL = 70; // s — total powered-flight window shown
+
+  // Phase bands
+  const bands = [
+    { label: 'BOOST', start: 0, end: 25.3, color: 'rgba(171,71,188,0.35)' },
+    { label: 'CORE',  start: 25.3, end: 63, color: 'rgba(30,136,229,0.25)' },
+    { label: 'TERRIER', start: 63, end: TOTAL, color: 'rgba(0,131,143,0.20)' },
+  ];
+
+  bands.forEach(b => {
+    const x0 = (b.start / TOTAL) * W;
+    const x1 = (b.end   / TOTAL) * W;
+    ctx.fillStyle = b.color;
+    ctx.fillRect(x0, 0, x1 - x0, H);
+    ctx.fillStyle = 'rgba(255,255,255,0.2)';
+    ctx.font = '8px var(--mc-font-mono)';
+    ctx.fillText(b.label, x0 + 4, H * 0.62);
+  });
+
+  // MET cursor
+  const cx = Math.min((met / TOTAL) * W, W);
+  ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, H); ctx.stroke();
+
+  // Event ticks
+  const events = [
+    { t: 0, label: 'LIFTOFF', color: 'rgba(30,136,229,0.8)' },
+    { t: 25.3, label: 'SEP', color: '#ab47bc' },
+    { t: 30, label: 'MAXQ', color: '#ef5350' },
+    { t: 63, label: 'B/O', color: '#ef5350' },
+  ];
+  events.forEach(e => {
+    const ex = (e.t / TOTAL) * W;
+    ctx.strokeStyle = e.color; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(ex, 0); ctx.lineTo(ex, H * 0.55); ctx.stroke();
+    ctx.fillStyle = e.color;
+    ctx.font = '7.5px var(--mc-font-mono)';
+    const lx = e.label === 'B/O' ? ex - 18 : ex + 2;
+    ctx.fillText(e.label, lx, H * 0.92);
+  });
+}
+
+// ---------------------------------------------------------------
+// HELPERS
+// ---------------------------------------------------------------
+function el(id) { return document.getElementById(id); }
+
+function setVal(id, val, cls) {
+  const e = el(id);
+  if (!e) return;
+  e.textContent = val;
+  if (cls !== undefined) {
+    e.className = 'telem-value' + (cls ? ' ' + cls : '');
+  }
+}
+
+function setConnBadge(cls, text) {
+  const b = el('conn-badge');
+  b.className = 'off';   // reset
+  b.classList.add(cls);
+  b.textContent = text;
+}
+
+function formatMET(s) {
+  if (!s || s < 0) return 'T+  00:00:00';
+  const hrs  = Math.floor(s / 3600);
+  const mins = Math.floor((s % 3600) / 60);
+  const secs = Math.floor(s % 60);
+  return `T+ ${String(hrs).padStart(2,'0')}:${String(mins).padStart(2,'0')}:${String(secs).padStart(2,'0')}`;
+}
+
+function renderAll() {
+  drawGlobe();
+  drawTrajectoryPlot();
+  drawTimeline();
+}
+
+// ---------------------------------------------------------------
+// RESIZE HANDLER
+// ---------------------------------------------------------------
+let resizeTimer;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => { invalidateCanvasSizes(); renderAll(); }, 80);
+});
+
+// ---------------------------------------------------------------
+// ANIMATION LOOP
+// ---------------------------------------------------------------
+function animate() {
+  drawTimeline();  // always tick for the MET cursor
+  requestAnimationFrame(animate);
+}
+requestAnimationFrame(animate);
+
+// Initial render
+renderAll();
+
+// ---------------------------------------------------------------
+// HOUSTON UI INTEGRATION HOOKS
+// ---------------------------------------------------------------
+// Expose a global API so the Telemachus Houston UI (or any host
+// frame) can:
+//   - Read current state: window.MissionControl.getState()
+//   - Subscribe to updates: window.MissionControl.onUpdate(fn)
+//   - Change panels: window.MissionControl.showPanel('globe')
+//   - Reset trajectory: window.MissionControl.clearTrajectory()
+window.MissionControl = {
+  version: '1.0.0',
+  mission: 'PERSEUS-1',
+
+  getState() { return { ...latestState }; },
+  getDirector() { return { ...latestDirector }; },
+  getNominalTrajectory() { return [...nominalTraj]; },
+  getActualTrajectory()  { return [...actualTraj]; },
+
+  clearTrajectory() {
+    actualTraj = [];
+    socket.emit('clear_trajectory');
+  },
+
+  onUpdate(fn) {
+    // fn will be called with (state, director) on each telemetry tick
+    socket.on('telemetry', d => fn(d.state, latestDirector));
+  },
+
+  showPanel(name) {
+    // For iframe embedding: hide all but the named panel
+    const panels = document.querySelectorAll('[data-panel]');
+    panels.forEach(p => {
+      p.style.display = (name === 'all' || p.dataset.panel === name) ? '' : 'none';
+    });
+  },
+};
+
+// Dispatch a standard custom event on each telemetry update
+// Houston can listen: window.addEventListener('mc:telemetry', e => ...)
+socket.on('telemetry', data => {
+  window.dispatchEvent(new CustomEvent('mc:telemetry', { detail: data }));
+});
+socket.on('director', data => {
+  window.dispatchEvent(new CustomEvent('mc:director', { detail: data }));
+});
+</script>
+</body>
+</html>
