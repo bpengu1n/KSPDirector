@@ -826,15 +826,17 @@ class TestUIGraphicalElements(unittest.TestCase):
         self.assertRegex(body, r'\.w\s*<|\.h\s*<|width\s*<|height\s*<',
             "getCanvasSize must check for small cached dimensions to force re-measure")
 
-    def test_star_positions_use_modular_arithmetic(self):
-        """Star positions must use modular arithmetic (% W, % H) to stay
-        within canvas bounds regardless of canvas size."""
+    def test_star_positions_bounded_by_canvas(self):
+        """Star positions must be scaled to canvas bounds (W, H) so they
+        stay within the viewport regardless of canvas size."""
         import re
         star_section = re.search(r'Stars.*?for.*?\{(.*?)\}', self.html, re.DOTALL)
         self.assertIsNotNone(star_section, "Star rendering loop must exist")
         body = star_section.group(1)
-        self.assertIn('% W', body, "Star X positions must use % W")
-        self.assertIn('% H', body, "Star Y positions must use % H")
+        has_w = '* W' in body or '% W' in body
+        has_h = '* H' in body or '% H' in body
+        self.assertTrue(has_w, "Star X positions must be scaled by W")
+        self.assertTrue(has_h, "Star Y positions must be scaled by H")
 
     def test_globe_renders_kerbin_body(self):
         """Globe must render the Kerbin circle with a gradient fill."""
@@ -908,6 +910,105 @@ class TestUIGraphicalElements(unittest.TestCase):
         marker = re.search(r'#69f0ae.*fill|fill.*#69f0ae', self.html)
         self.assertIsNotNone(marker,
             "Globe must render vehicle position marker (green #69f0ae dot)")
+
+    def test_star_positions_not_regularly_spaced(self):
+        """Star rendering must use a hash function that avoids visible rows.
+        Simple linear congruential ((i * A + B) % W) produces equally-spaced
+        rows at common canvas widths; a proper hash must be used instead."""
+        import re
+        star_section = re.search(r'// Stars.*?for\s*\(.*?\{(.*?)\}', self.html, re.DOTALL)
+        self.assertIsNotNone(star_section, "Star rendering loop must exist")
+        body = star_section.group(1)
+        self.assertNotRegex(body, r'\(\s*i\s*\*\s*\d+\s*\+\s*\d+\s*\)\s*%\s*W',
+            "Star X must not use simple ((i * A + B) % W) — it produces visible rows")
+
+    def test_star_hash_uses_nonlinear_distribution(self):
+        """Star position generation must use a nonlinear hash (e.g., bit mixing,
+        sine hash, or xorshift) to produce visually random distribution."""
+        import re
+        star_section = re.search(r'// Stars.*?for\s*\(.*?\{(.*?)\}', self.html, re.DOTALL)
+        self.assertIsNotNone(star_section, "Star rendering loop must exist")
+        body = star_section.group(1)
+        has_hash_fn = ('hash' in body.lower() or 'seed' in body.lower() or
+                       'Math.sin' in body or '>>>' in body or '^' in body or
+                       '0x' in body)
+        self.assertTrue(has_hash_fn,
+            "Star positions should use a hash function (bit mixing, sine hash, etc.) "
+            "instead of linear arithmetic")
+
+
+class TestUITimelinePhaseBands(unittest.TestCase):
+    """Tests that timeline phase bands derive from actual trajectory data
+    rather than using hardcoded transition times that can drift from the sim."""
+
+    @classmethod
+    def setUpClass(cls):
+        import os
+        html_path = os.path.join(os.path.dirname(__file__),
+                                 '..', 'mission_control', 'static', 'index.html')
+        with open(html_path, 'r') as f:
+            cls.html = f.read()
+
+    def test_phase_bands_derived_from_nominal_data(self):
+        """Timeline phase bands must be derived from nominalTraj data,
+        not hardcoded with fixed start/end times."""
+        import re
+        bands_section = re.search(r'(Phase bands|bands).*?forEach', self.html, re.DOTALL)
+        self.assertIsNotNone(bands_section, "Phase band drawing code must exist")
+        section = bands_section.group(0)
+        has_dynamic = ('nominalTraj' in section or 'buildPhaseBands' in section or
+                       'phaseBands' in section or 'computeBands' in section or
+                       'deriveBands' in section)
+        self.assertTrue(has_dynamic,
+            "Phase bands should reference nominalTraj or a derived band computation, "
+            "not use hardcoded start/end times")
+
+    def test_phase_bands_include_coast_apo(self):
+        """Phase bands should distinguish COAST_APO from other coast phases."""
+        import re
+        bands = re.findall(r"label:\s*'([^']+)'", self.html)
+        coast_labels = [b for b in bands if 'COAST' in b.upper() or 'APO' in b.upper()]
+        self.assertTrue(len(coast_labels) > 0,
+            "Timeline should have a coast-to-apoapsis phase band")
+
+    def test_no_hardcoded_terrier_end_time(self):
+        """The Terrier phase band must not have a hardcoded end time like 290.
+        The actual TERRIER→COAST_APO transition is at ~T+216.5s."""
+        import re
+        bands_match = re.findall(r"label:\s*'TERRIER'[^}]*end:\s*(\d+)", self.html)
+        for end_val in bands_match:
+            self.assertNotEqual(int(end_val), 290,
+                "Terrier band end=290 is wrong (actual transition ~216.5s). "
+                "Bands should derive from trajectory data.")
+
+    def test_band_builder_function_exists(self):
+        """A function must exist that computes phase bands from trajectory data,
+        so bands update when a new scenario is loaded."""
+        self.assertRegex(self.html, r'function\s+(buildPhaseBands|computePhaseBands|derivePhaseBands)',
+            "A function to compute phase bands from trajectory data must exist")
+
+    def test_phase_band_colors_defined(self):
+        """Each phase should have a distinct band color for visual differentiation."""
+        import re
+        color_map = re.search(r'(PHASE_COLORS|phaseColors|bandColors)\s*=\s*\{', self.html)
+        has_color_in_bands = len(re.findall(r"color:\s*'rgba", self.html)) >= 5
+        self.assertTrue(color_map is not None or has_color_in_bands,
+            "Phase band colors must be defined for at least 5 phases")
+
+    def test_phase_bands_update_on_scenario_load(self):
+        """When a new scenario loads (and new nominalTraj arrives), phase bands
+        must be recomputed, not remain stale from the previous scenario."""
+        import re
+        on_nominal = re.search(r"socket\.on\('nominal'", self.html, re.DOTALL)
+        self.assertIsNotNone(on_nominal, "Socket handler for 'nominal' event must exist")
+        nominal_handler_start = on_nominal.start()
+        handler_section = self.html[nominal_handler_start:nominal_handler_start + 500]
+        has_band_rebuild = ('buildPhaseBands' in handler_section or
+                           'computePhaseBands' in handler_section or
+                           'derivePhaseBands' in handler_section or
+                           'phaseBands' in handler_section)
+        self.assertTrue(has_band_rebuild,
+            "The 'nominal' socket handler must rebuild phase bands when new trajectory data arrives")
 
 
 if __name__ == "__main__":

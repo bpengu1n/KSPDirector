@@ -696,12 +696,54 @@ function computeNominalCoast() {
   );
 }
 
+const PHASE_COLORS = {
+  'BOOST':        'rgba(171,71,188,0.35)',
+  'CORE':         'rgba(30,136,229,0.25)',
+  'TERRIER':      'rgba(0,131,143,0.20)',
+  'COAST_APO':    'rgba(255,255,255,0.06)',
+  'COAST':        'rgba(255,255,255,0.06)',
+  'CIRCULARIZE':  'rgba(38,166,154,0.20)',
+  'ORBIT':        'rgba(102,187,106,0.12)',
+};
+const PHASE_LABELS = {
+  'BOOST': 'BOOST', 'CORE': 'CORE', 'TERRIER': 'TERRIER',
+  'COAST_APO': 'COAST', 'COAST': 'COAST',
+  'CIRCULARIZE': 'CIRC', 'ORBIT': 'ORBIT',
+};
+
+function buildPhaseBands(traj) {
+  if (!traj || traj.length < 2) return [];
+  const bands = [];
+  let curPhase = traj[0].phase;
+  let startT = traj[0].t_s;
+  for (let i = 1; i < traj.length; i++) {
+    if (traj[i].phase !== curPhase) {
+      bands.push({
+        label: PHASE_LABELS[curPhase] || curPhase,
+        start: startT,
+        end: traj[i].t_s,
+        color: PHASE_COLORS[curPhase] || 'rgba(255,255,255,0.06)',
+      });
+      curPhase = traj[i].phase;
+      startT = traj[i].t_s;
+    }
+  }
+  bands.push({
+    label: PHASE_LABELS[curPhase] || curPhase,
+    start: startT,
+    end: traj[traj.length - 1].t_s,
+    color: PHASE_COLORS[curPhase] || 'rgba(255,255,255,0.06)',
+  });
+  return bands;
+}
+
 // ---------------------------------------------------------------
 // GLOBAL STATE
 // ---------------------------------------------------------------
 let nominalTraj = [];       // [{altitude_km, downrange_km, velocity, ...}] — full trajectory including orbital phases
 let nominalAscent = [];     // core stage portion only (BOOST + CORE) — for detailed display/auto-range
 let nominalCoast = [];      // ballistic coast extension after core burnout
+let phaseBands = [];        // timeline phase bands derived from nominalTraj
 let actualTraj  = [];       // accumulated from telemetry
 let latestState = {};       // latest telemetry snapshot
 let latestDirector = {};    // latest flight director output
@@ -732,6 +774,7 @@ socket.on('nominal', data => {
   nominalTraj = data.trajectory || [];
   nominalAscent = nominalTraj.filter(p => p.phase === 'BOOST' || p.phase === 'CORE');
   nominalCoast = computeNominalCoast();
+  phaseBands = buildPhaseBands(nominalTraj);
   console.log('Nominal trajectory received:', nominalTraj.length, 'points,',
               nominalAscent.length, 'ascent,', nominalCoast.length, 'coast points');
   renderAll();
@@ -970,11 +1013,15 @@ function drawGlobe() {
   ctx.fillStyle = '#050810';
   ctx.fillRect(0, 0, W, H);
 
-  // Stars (deterministic)
+  // Stars (deterministic pseudo-random via sine hash)
   ctx.fillStyle = 'rgba(200,215,255,0.5)';
+  function starHash(seed) {
+    var x = Math.sin(seed * 127.1 + 311.7) * 43758.5453;
+    return x - Math.floor(x);
+  }
   for (let i = 0; i < 120; i++) {
-    const sx = ((i * 137 + 31) % W);
-    const sy = ((i * 97 + 53) % H);
+    const sx = starHash(i * 2) * W;
+    const sy = starHash(i * 2 + 1) * H;
     const sr = (i % 3 === 0) ? 1.2 : 0.7;
     ctx.beginPath(); ctx.arc(sx, sy, sr, 0, Math.PI*2); ctx.fill();
   }
@@ -1253,13 +1300,13 @@ function drawTimeline() {
   const met = latestState.mission_time || 0;
   const TOTAL = 500; // s — total mission window (orbit insertion at ~T+480s)
 
-  // Phase bands
-  const bands = [
+  // Phase bands — derived from nominalTraj via buildPhaseBands()
+  const bands = phaseBands.length > 0 ? phaseBands : [
     { label: 'BOOST', start: 0, end: 25.3, color: 'rgba(171,71,188,0.35)' },
     { label: 'CORE',  start: 25.3, end: 63, color: 'rgba(30,136,229,0.25)' },
-    { label: 'TERRIER', start: 63, end: 290, color: 'rgba(0,131,143,0.20)' },
-    { label: 'COAST', start: 290, end: 420, color: 'rgba(255,255,255,0.06)' },
-    { label: 'CIRC', start: 420, end: 480, color: 'rgba(38,166,154,0.20)' },
+    { label: 'TERRIER', start: 63, end: 217, color: 'rgba(0,131,143,0.20)' },
+    { label: 'COAST', start: 217, end: 472, color: 'rgba(255,255,255,0.06)' },
+    { label: 'CIRC', start: 472, end: 480, color: 'rgba(38,166,154,0.20)' },
     { label: 'ORBIT', start: 480, end: TOTAL, color: 'rgba(102,187,106,0.12)' },
   ];
 

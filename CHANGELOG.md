@@ -28,6 +28,8 @@
 ### Fixed
 - Suborbital trajectory no longer stops at core burnout (T+61s) — continues through Terrier burn to orbit.
 - Gamma clamping bug that prevented descent during coast phases.
+- Timeline phase bands now derived dynamically from nominal trajectory data instead of hardcoded times that drifted from the sim (TERRIER ending at 290s instead of actual ~217s, CIRC starting at 420s instead of ~472s).
+- Star rendering replaced linear congruential formula with sine hash to eliminate visible row patterns at common canvas sizes.
 - Service bay double-count in fuel inspection test (source inspection updated for refactored method).
 
 ## [1.0.0] — 2026-06-24
