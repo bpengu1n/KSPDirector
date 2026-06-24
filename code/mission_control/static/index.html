@@ -588,7 +588,7 @@ function updateTelemetryPanel() {
   setVal('t-thr', thr, '');
   const lf = s.liquid_fuel || 0;
   const sf = s.solid_fuel || 0;
-  const lfMax = 4000, sfMax = 600;
+  const lfMax = 360, sfMax = 160;
   setVal('t-lf', lf.toFixed(0), colorClass(lf, lfMax*0.5, lfMax*0.2));
   setVal('t-sf', sf.toFixed(0), '');
   el('lf-bar').style.width = Math.max(0, Math.min(100, lf/lfMax*100)) + '%';
@@ -968,6 +968,30 @@ function drawTimeline() {
     const lx = e.label === 'B/O' ? ex - 18 : ex + 2;
     ctx.fillText(e.label, lx, H * 0.92);
   });
+}
+
+// ---------------------------------------------------------------
+// ADVISORY AUDIO ALERT (P3-02)
+// ---------------------------------------------------------------
+let _prevAdvisoryLevel = 'NOMINAL';
+const _alertCtx = typeof AudioContext !== 'undefined' ? new AudioContext() : null;
+function playAdvisoryAlert(level) {
+  if (!_alertCtx || level === _prevAdvisoryLevel) { _prevAdvisoryLevel = level; return; }
+  const priority = { NOMINAL: 0, CAUTION: 1, WARNING: 2, ABORT: 3 };
+  if ((priority[level] || 0) <= (priority[_prevAdvisoryLevel] || 0)) { _prevAdvisoryLevel = level; return; }
+  _prevAdvisoryLevel = level;
+  const freq = level === 'ABORT' ? 880 : level === 'WARNING' ? 660 : 440;
+  const dur = level === 'ABORT' ? 0.4 : 0.2;
+  try {
+    const osc = _alertCtx.createOscillator();
+    const gain = _alertCtx.createGain();
+    osc.connect(gain); gain.connect(_alertCtx.destination);
+    osc.frequency.value = freq;
+    osc.type = 'square';
+    gain.gain.setValueAtTime(0.08, _alertCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, _alertCtx.currentTime + dur);
+    osc.start(); osc.stop(_alertCtx.currentTime + dur);
+  } catch(e) {}
 }
 
 // ---------------------------------------------------------------
