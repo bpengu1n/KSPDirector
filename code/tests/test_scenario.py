@@ -720,5 +720,88 @@ class TestUIViewport(unittest.TestCase):
             "Vehicle marker visibility check (altitude > 100) must exist")
 
 
+class TestUILayoutVisibility(unittest.TestCase):
+    """Tests that the interface layout doesn't clip or hide panels.
+
+    The grid layout (topbar / content / timeline) must prevent the CSS Grid
+    min-height:auto problem from pushing the timeline off-screen, and all
+    major panels must be properly placed within the grid.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import os
+        html_path = os.path.join(os.path.dirname(__file__),
+                                 '..', 'mission_control', 'static', 'index.html')
+        with open(html_path, 'r') as f:
+            cls.html = f.read()
+
+    def _css_for(self, selector):
+        """Extract CSS rule body for a given selector."""
+        import re
+        escaped = re.escape(selector)
+        m = re.search(escaped + r'\s*\{([^}]+)\}', self.html)
+        return m.group(1) if m else ''
+
+    def test_shell_grid_has_three_rows(self):
+        """The #shell grid must define exactly 3 rows: topbar, content, timeline."""
+        import re
+        m = re.search(r'grid-template-rows\s*:\s*([^;]+)', self._css_for('#shell'))
+        self.assertIsNotNone(m, "#shell must define grid-template-rows")
+        parts = m.group(1).strip().split()
+        self.assertEqual(len(parts), 3,
+            f"Grid should have 3 row tracks, got {len(parts)}: {parts}")
+
+    def test_center_panel_prevents_overflow(self):
+        """#center-panel must have min-height:0 or overflow:hidden to prevent
+        the CSS Grid min-height:auto problem from expanding the middle row
+        and pushing the timeline off-screen."""
+        css = self._css_for('#center-panel')
+        has_min_height_0 = 'min-height' in css and '0' in css
+        has_overflow_hidden = 'overflow' in css and 'hidden' in css
+        self.assertTrue(has_min_height_0 or has_overflow_hidden,
+            "#center-panel needs min-height:0 or overflow:hidden to prevent grid overflow")
+
+    def test_right_panel_prevents_overflow(self):
+        """#right-panel must constrain its height to prevent pushing the
+        timeline off-screen when advisory/gates content is tall."""
+        css = self._css_for('#right-panel')
+        has_min_height_0 = 'min-height' in css and '0' in css
+        has_overflow = 'overflow' in css
+        self.assertTrue(has_min_height_0 or has_overflow,
+            "#right-panel needs min-height:0 or overflow to prevent grid overflow")
+
+    def test_timeline_bar_has_explicit_grid_row(self):
+        """#timeline-bar must have an explicit grid-row to ensure it lands
+        in the bottom row regardless of auto-placement order."""
+        css = self._css_for('#timeline-bar')
+        self.assertIn('grid-row', css,
+            "#timeline-bar should have explicit grid-row placement")
+
+    def test_canvas_panels_have_overflow_hidden(self):
+        """Canvas panels must have overflow:hidden so canvas elements don't
+        force a minimum height on their grid track."""
+        css = self._css_for('.canvas-panel')
+        self.assertIn('overflow', css,
+            ".canvas-panel needs overflow:hidden to contain canvas sizing")
+
+    def test_all_grid_areas_present(self):
+        """All 5 grid areas must exist in the HTML: topbar, left, center, right, timeline."""
+        for panel_id in ['topbar', 'left-panel', 'center-panel', 'right-panel', 'timeline-bar']:
+            self.assertIn(f'id="{panel_id}"', self.html,
+                f"Grid area #{panel_id} must exist in the HTML")
+
+    def test_body_overflow_hidden(self):
+        """html,body must have overflow:hidden to prevent page scrolling."""
+        self.assertRegex(self.html, r'html\s*,\s*body\s*\{[^}]*overflow\s*:\s*hidden',
+            "html,body must have overflow:hidden")
+
+    def test_timeline_canvas_has_height(self):
+        """The timeline canvas must have an explicit height so it renders."""
+        css = self._css_for('#timeline-canvas')
+        self.assertIn('height', css,
+            "#timeline-canvas must have an explicit height")
+
+
 if __name__ == "__main__":
     unittest.main()
