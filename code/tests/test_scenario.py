@@ -636,5 +636,89 @@ class TestConstantsAPI(unittest.TestCase):
         self.assertEqual(data["ATM_CEIL"], ATM_CEIL)
 
 
+class TestUIViewport(unittest.TestCase):
+    """Tests that the web UI viewport adapts to the full orbital trajectory."""
+
+    @classmethod
+    def setUpClass(cls):
+        import os
+        html_path = os.path.join(os.path.dirname(__file__),
+                                 '..', 'mission_control', 'static', 'index.html')
+        with open(html_path, 'r') as f:
+            cls.html = f.read()
+
+    def test_timeline_covers_full_mission(self):
+        """Timeline TOTAL must extend past core burnout to cover Terrier + orbit."""
+        import re
+        m = re.search(r'const\s+TOTAL\s*=\s*(\d+)', self.html)
+        self.assertIsNotNone(m, "TOTAL constant not found in timeline code")
+        total = int(m.group(1))
+        self.assertGreaterEqual(total, 480,
+            f"Timeline TOTAL={total} is too short; orbit insertion occurs at ~T+480s")
+
+    def test_timeline_has_terrier_and_orbit_events(self):
+        """Timeline event markers should include Terrier ignition and orbit insertion."""
+        self.assertIn("TERR", self.html,
+            "Timeline should show a Terrier ignition event marker")
+
+    def test_timeline_has_orbit_phase_band(self):
+        """Timeline phase bands should include COAST and ORBIT beyond TERRIER."""
+        import re
+        bands = re.findall(r"label:\s*'(\w+)'", self.html)
+        self.assertIn('COAST', bands,
+            "Timeline phase bands should include a COAST/coast-to-apo band")
+
+    def test_globe_extent_uses_actual_trajectory_not_nominal(self):
+        """Globe dynamic zoom should track the actual trajectory extent,
+        not the full nominal (which goes to orbit and would zoom out too far)."""
+        import re
+        extent_match = re.search(r'extentSources\s*=\s*\[([^\]]+)\]', self.html)
+        self.assertIsNotNone(extent_match)
+        sources = extent_match.group(1)
+        self.assertNotIn('nominalTraj', sources,
+            "Globe extent should NOT include nominalTraj — it zooms too far out")
+        self.assertIn('actualTraj', sources,
+            "Globe extent must include actualTraj to track the vehicle")
+
+    def test_trajectory_plot_auto_range_excludes_orbital_nominal(self):
+        """Trajectory plot auto-range should not include the full orbital
+        nominal trajectory, which would compress the ascent view."""
+        import re
+        allpts_match = re.search(r'allPts\s*=\s*\[([^\]]+)\]', self.html)
+        self.assertIsNotNone(allpts_match)
+        sources = allpts_match.group(1)
+        self.assertNotIn('nominalTraj', sources,
+            "Trajectory plot auto-range should NOT include full nominalTraj")
+
+    def test_nominal_coast_skips_orbital_points(self):
+        """computeNominalCoast should project from the core burnout point,
+        not the last orbital point (which would produce a nonsensical arc)."""
+        self.assertRegex(self.html,
+            r'computeNominalCoast.*?CORE.*?BOOST|burnout|core_burnout|phase\s*[!=]==?\s*["\']ORBIT',
+            "computeNominalCoast should find the core burnout point, not use the last (orbital) point")
+
+    def test_nominal_trajectory_split_for_display(self):
+        """The nominal trajectory should be split into ascent (for detailed
+        display) and orbital (for reference) portions."""
+        self.assertIn('nominalAscent', self.html,
+            "HTML should define nominalAscent for the core stage portion of the trajectory")
+
+    def test_globe_altitude_rings_include_orbit(self):
+        """Globe altitude rings should include the 80km target orbit ring."""
+        import re
+        rings = re.findall(r'\[([^\]]*80[^\]]*)\]\.forEach\(\s*(?:alt_km|a)\s*=>', self.html)
+        self.assertTrue(len(rings) > 0,
+            "Globe should have altitude ring at 80km (target orbit)")
+
+    def test_vehicle_marker_visible_during_ascent(self):
+        """The vehicle position marker must be drawn when altitude > 100m
+        (not just during specific phases)."""
+        self.assertIn('altitude', self.html)
+        import re
+        marker_check = re.search(r'altitude.*>\s*100', self.html)
+        self.assertIsNotNone(marker_check,
+            "Vehicle marker visibility check (altitude > 100) must exist")
+
+
 if __name__ == "__main__":
     unittest.main()

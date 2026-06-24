@@ -681,7 +681,8 @@ function projectBallisticArc(alt_m, v_horiz_ms, v_vert_ms, dr_km) {
 
 function computeNominalCoast() {
   if (!nominalTraj || nominalTraj.length < 2) return [];
-  const last = nominalTraj[nominalTraj.length - 1];
+  const corePts = nominalTraj.filter(p => p.phase === 'BOOST' || p.phase === 'CORE');
+  const last = corePts.length > 0 ? corePts[corePts.length - 1] : nominalTraj[nominalTraj.length - 1];
   const pfv = last.pitch_from_vertical || 50;
   const gamma_rad = (90 - pfv) * Math.PI / 180;
   const vel = last.velocity || 643;
@@ -696,7 +697,8 @@ function computeNominalCoast() {
 // ---------------------------------------------------------------
 // GLOBAL STATE
 // ---------------------------------------------------------------
-let nominalTraj = [];       // [{altitude_km, downrange_km, velocity, ...}]
+let nominalTraj = [];       // [{altitude_km, downrange_km, velocity, ...}] — full trajectory including orbital phases
+let nominalAscent = [];     // core stage portion only (BOOST + CORE) — for detailed display/auto-range
 let nominalCoast = [];      // ballistic coast extension after core burnout
 let actualTraj  = [];       // accumulated from telemetry
 let latestState = {};       // latest telemetry snapshot
@@ -726,9 +728,10 @@ socket.on('nominal', data => {
   const overlay = el('loading-overlay');
   if (overlay) overlay.style.display = 'none';
   nominalTraj = data.trajectory || [];
+  nominalAscent = nominalTraj.filter(p => p.phase === 'BOOST' || p.phase === 'CORE');
   nominalCoast = computeNominalCoast();
   console.log('Nominal trajectory received:', nominalTraj.length, 'points,',
-              nominalCoast.length, 'coast points');
+              nominalAscent.length, 'ascent,', nominalCoast.length, 'coast points');
   renderAll();
 });
 
@@ -1029,8 +1032,8 @@ function drawGlobe() {
   // Nominal coast extension (lighter blue, after core burnout)
   drawPath(nominalCoast, 'rgba(30,136,229,0.25)', [4, 6], 1.2);
 
-  // Nominal trajectory (dashed blue)
-  drawPath(nominalTraj, 'rgba(30,136,229,0.5)', [6, 5], 1.5);
+  // Nominal trajectory (dashed blue, core ascent only — keeps globe focused)
+  drawPath(nominalAscent, 'rgba(30,136,229,0.5)', [6, 5], 1.5);
 
   // Ballistic projection from current velocity state (amber)
   drawPath(projectionArc, 'rgba(255,183,77,0.55)', [5, 4], 1.5);
@@ -1135,7 +1138,7 @@ function drawTrajectoryPlot() {
   const gh = H - pad.t - pad.b;
 
   // Auto-range from data including projection and nominal coast
-  const allPts = [...nominalTraj, ...nominalCoast, ...actualTraj, ...trajProjPts];
+  const allPts = [...nominalAscent, ...nominalCoast, ...actualTraj, ...trajProjPts];
   const maxDR  = Math.max(10, ...allPts.map(p => p.downrange_km || 0)) * 1.08;
   const maxAlt = Math.max(18, ...allPts.map(p => p.altitude_km  || 0)) * 1.08;
 
@@ -1193,8 +1196,8 @@ function drawTrajectoryPlot() {
   // Nominal coast extension (lighter, behind nominal powered)
   drawTraj(nominalCoast, 'rgba(30,136,229,0.25)', [4, 6], 1.2);
 
-  // Nominal powered trajectory
-  drawTraj(nominalTraj, 'rgba(30,136,229,0.5)', [6, 5], 1.5);
+  // Nominal powered trajectory (core ascent only — keeps plot focused)
+  drawTraj(nominalAscent, 'rgba(30,136,229,0.5)', [6, 5], 1.5);
 
   // Ballistic projection from current velocity (amber)
   drawTraj(trajProjPts, 'rgba(255,183,77,0.55)', [5, 4], 1.5);
@@ -1246,13 +1249,16 @@ function drawTimeline() {
 
   // P3-08: Telemachus mission_time is authoritative; wall-clock is fallback only
   const met = latestState.mission_time || 0;
-  const TOTAL = 70; // s — total powered-flight window shown
+  const TOTAL = 500; // s — total mission window (orbit insertion at ~T+480s)
 
   // Phase bands
   const bands = [
     { label: 'BOOST', start: 0, end: 25.3, color: 'rgba(171,71,188,0.35)' },
     { label: 'CORE',  start: 25.3, end: 63, color: 'rgba(30,136,229,0.25)' },
-    { label: 'TERRIER', start: 63, end: TOTAL, color: 'rgba(0,131,143,0.20)' },
+    { label: 'TERRIER', start: 63, end: 290, color: 'rgba(0,131,143,0.20)' },
+    { label: 'COAST', start: 290, end: 420, color: 'rgba(255,255,255,0.06)' },
+    { label: 'CIRC', start: 420, end: 480, color: 'rgba(38,166,154,0.20)' },
+    { label: 'ORBIT', start: 480, end: TOTAL, color: 'rgba(102,187,106,0.12)' },
   ];
 
   bands.forEach(b => {
@@ -1277,6 +1283,8 @@ function drawTimeline() {
     { t: 25.3, label: 'SEP', color: '#ab47bc' },
     { t: 30, label: 'MAXQ', color: '#ef5350' },
     { t: 63, label: 'B/O', color: '#ef5350' },
+    { t: 63, label: 'TERR', color: '#26a69a' },
+    { t: 480, label: 'ORBIT', color: '#66bb6a' },
   ];
   events.forEach(e => {
     const ex = (e.t / TOTAL) * W;
