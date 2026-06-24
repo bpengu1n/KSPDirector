@@ -187,6 +187,18 @@ def print_summary(result: TrajectoryResult, vehicle: VehicleConfig,
     print(f"  Apoapsis:  {result.apoapsis_km:7.1f} km")
     print(f"  Periapsis: {result.periapsis_km:7.0f} km "
           f"({'suborbital' if result.periapsis_km < -70 else 'orbital' if result.periapsis_km > 70 else 'marginal'})")
+
+    orbit_pts = [p for p in result.points if p.phase == "ORBIT"]
+    if orbit_pts:
+        op = orbit_pts[0]
+        print(f"\nOrbit insertion:")
+        print(f"  t = {op.t:.0f} s   h = {op.altitude/1000:.1f} km   "
+              f"v = {op.velocity:.0f} m/s   mass = {op.mass:.2f} t")
+        print(f"  Apoapsis:  {op.apoapsis:.1f} km   Periapsis: {op.periapsis:.1f} km")
+        import math as _math
+        remaining_dv = 9.80665 * 345 * _math.log(op.mass / vehicle.mission_stage_dry) if op.mass > vehicle.mission_stage_dry else 0
+        print(f"  Remaining dV: {remaining_dv:.0f} m/s (TMI budget: ~856 m/s)")
+
     print(f"\nLoss budget:")
     print(f"  Gravity losses: {result.grav_loss_total:.0f} m/s")
     print(f"  Drag losses:    {result.drag_loss_total:.0f} m/s")
@@ -250,6 +262,9 @@ def build_argparser() -> argparse.ArgumentParser:
                    help="Print trajectory table alongside summary")
     p.add_argument("--compare", nargs="+", metavar="PROGRAM",
                    help=f"Compare multiple pitch programs. Options: {list(PITCH_PROGRAMS)}")
+    p.add_argument("--scenario", default=None, metavar="NAME",
+                   help="Run a preset scenario from the scenario library (e.g., 'nominal', "
+                        "'steep_ascent', 'heavy_payload'). Overrides --booster/--pitch/etc.")
     return p
 
 
@@ -263,6 +278,23 @@ def main(argv=None):
         booster_pct=args.booster_pct,
         extra_payload=args.extra_payload,
     )
+
+    if args.scenario:
+        from mission_control.scenario import PRESET_SCENARIOS
+        scenario = PRESET_SCENARIOS.get(args.scenario)
+        if not scenario:
+            print(f"Unknown scenario '{args.scenario}'. Available: {list(PRESET_SCENARIOS.keys())}")
+            sys.exit(1)
+        vehicle = scenario.to_vehicle_config()
+        pitch_prog = scenario.get_pitch_program()
+        result = run_ascent(vehicle, pitch_program=pitch_prog, dt=args.dt)
+        if args.json:
+            print(json.dumps(result_to_dict(result, vehicle), indent=2))
+            return
+        print_summary(result, vehicle, label=args.scenario.upper())
+        if args.table:
+            print_table(result)
+        return
 
     if args.compare:
         compare_programs(vehicle, args.compare)
