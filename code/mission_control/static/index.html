@@ -107,6 +107,68 @@ html,body{width:100%;height:100%;background:var(--mc-bg);color:var(--mc-text);
 #conn-badge.sim{color:var(--mc-yellow-bright);border:1px solid var(--mc-yellow)}
 #conn-badge.off{color:var(--mc-red-bright);border:1px solid var(--mc-red)}
 
+#scenario-btn{
+  font-size:9px;letter-spacing:1.5px;padding:4px 10px;border-radius:3px;
+  background:var(--mc-panel-alt);color:var(--mc-teal-bright);border:1px solid var(--mc-teal);
+  cursor:pointer;font-family:var(--mc-font-mono);text-transform:uppercase;
+}
+#scenario-btn:hover{background:var(--mc-teal);color:var(--mc-text-bright)}
+#scenario-btn.active{background:var(--mc-teal);color:var(--mc-text-bright)}
+
+/* Scenario panel overlay */
+#scenario-panel{
+  display:none;
+  background:var(--mc-panel);border-top:1px solid var(--mc-border);
+  max-height:0;overflow-y:auto;transition:max-height 0.3s;
+}
+#scenario-panel.open{display:block;max-height:500px}
+
+.sc-section{padding:8px 14px;border-bottom:1px solid var(--mc-border)}
+.sc-section-title{
+  font-size:8px;letter-spacing:2px;color:var(--mc-teal-bright);margin-bottom:6px;text-transform:uppercase
+}
+.sc-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:5px}
+.sc-label{font-size:9px;color:var(--mc-text-dim);letter-spacing:0.5px;min-width:80px}
+.sc-select,.sc-input{
+  font-size:10px;font-family:var(--mc-font-mono);
+  background:var(--mc-bg);color:var(--mc-text-bright);
+  border:1px solid var(--mc-border);border-radius:2px;padding:3px 6px;
+  width:110px;
+}
+.sc-select:focus,.sc-input:focus{border-color:var(--mc-teal);outline:none}
+.sc-range{width:100px;accent-color:var(--mc-teal-bright)}
+.sc-range-val{font-size:10px;color:var(--mc-text-bright);min-width:40px;text-align:right}
+
+.sc-btn{
+  font-size:9px;font-family:var(--mc-font-mono);letter-spacing:1px;
+  padding:5px 12px;border-radius:3px;cursor:pointer;border:1px solid;
+  text-transform:uppercase;
+}
+.sc-btn-primary{background:var(--mc-teal);color:var(--mc-text-bright);border-color:var(--mc-teal)}
+.sc-btn-primary:hover{background:var(--mc-teal-bright)}
+.sc-btn-small{padding:4px 8px;font-size:8px}
+.sc-btn-small:hover{background:var(--mc-panel-alt)}
+
+.sc-playback-row{display:flex;align-items:center;gap:6px;margin-bottom:4px}
+.sc-speed-btn{
+  font-size:8px;font-family:var(--mc-font-mono);padding:2px 6px;border-radius:2px;
+  background:var(--mc-panel-alt);color:var(--mc-text-dim);border:1px solid var(--mc-border);
+  cursor:pointer;
+}
+.sc-speed-btn:hover,.sc-speed-btn.active{background:var(--mc-accent-dim);color:var(--mc-accent);border-color:var(--mc-accent)}
+
+.sc-progress{
+  height:4px;background:rgba(255,255,255,0.08);border-radius:2px;overflow:hidden;margin-top:4px
+}
+.sc-progress-fill{height:100%;background:var(--mc-teal-bright);border-radius:2px;transition:width 0.3s}
+
+.sc-summary{font-size:9px;color:var(--mc-text-dim);line-height:1.5}
+.sc-summary b{color:var(--mc-text-bright)}
+
+.sc-playback-state{
+  font-size:9px;letter-spacing:1px;color:var(--mc-teal-bright);font-weight:700
+}
+
 /* ==========================================================================
    TELEMETRY PANEL (left)
    ========================================================================== */
@@ -256,6 +318,7 @@ html,body{width:100%;height:100%;background:var(--mc-bg);color:var(--mc-text);
     <div id="met-display">T+ 00:00:00</div>
     <div id="phase-badge">PRELAUNCH</div>
     <div style="flex:1"></div>
+    <button id="scenario-btn" onclick="toggleScenarioPanel()">SCENARIO</button>
     <div id="conn-badge" class="off">DISCONNECTED</div>
   </header>
 
@@ -346,6 +409,93 @@ html,body{width:100%;height:100%;background:var(--mc-bg);color:var(--mc-text);
         <span class="telem-label">MISSION TIME</span>
         <span><span class="telem-value" id="t-met2">—</span></span>
       </div>
+    </div>
+
+    <!-- SCENARIO CONTROL PANEL -->
+    <div id="scenario-panel">
+
+      <div class="sc-section">
+        <div class="sc-section-title">Scenario</div>
+        <div class="sc-row">
+          <span class="sc-label">PRESET</span>
+          <select id="sc-preset" class="sc-select" onchange="onPresetChange()">
+            <option value="">Custom</option>
+          </select>
+        </div>
+        <div id="sc-custom-fields">
+          <div class="sc-row">
+            <span class="sc-label">BOOSTERS</span>
+            <select id="sc-booster-type" class="sc-select">
+              <option value="hammer">Hammer</option>
+              <option value="thumper">Thumper</option>
+            </select>
+          </div>
+          <div class="sc-row">
+            <span class="sc-label">N BOOSTERS</span>
+            <input id="sc-n-boosters" class="sc-input" type="number" value="2" min="0" max="6" step="1" style="width:60px"/>
+          </div>
+          <div class="sc-row">
+            <span class="sc-label">THRUST %</span>
+            <input id="sc-booster-pct" class="sc-range" type="range" min="1" max="100" value="20"
+                   oninput="el('sc-booster-pct-val').textContent=this.value+'%'"/>
+            <span class="sc-range-val" id="sc-booster-pct-val">20%</span>
+          </div>
+          <div class="sc-row">
+            <span class="sc-label">PAYLOAD</span>
+            <input id="sc-extra-payload" class="sc-input" type="number" value="0" min="0" max="2" step="0.1" style="width:60px"/>
+            <span class="sc-range-val" style="font-size:9px;color:var(--mc-text-dim)">t</span>
+          </div>
+          <div class="sc-row">
+            <span class="sc-label">PITCH</span>
+            <select id="sc-pitch-program" class="sc-select">
+              <option value="nominal">Nominal</option>
+              <option value="steep">Steep</option>
+              <option value="shallow">Shallow</option>
+              <option value="late_turn">Late Turn</option>
+            </select>
+          </div>
+        </div>
+        <div class="sc-row" style="margin-top:8px">
+          <span class="sc-label">NOISE</span>
+          <input id="sc-noise" class="sc-range" type="range" min="0" max="20" value="2"
+                 oninput="el('sc-noise-val').textContent=this.value+'%'"/>
+          <span class="sc-range-val" id="sc-noise-val">2%</span>
+        </div>
+        <div style="margin-top:8px;text-align:center">
+          <button class="sc-btn sc-btn-primary" onclick="loadScenario()">LOAD SCENARIO</button>
+        </div>
+      </div>
+
+      <div class="sc-section">
+        <div class="sc-section-title">Playback</div>
+        <div class="sc-playback-row">
+          <button class="sc-btn sc-btn-small" id="sc-play-btn" onclick="scPlay()" style="border-color:var(--mc-green)">PLAY</button>
+          <button class="sc-btn sc-btn-small" id="sc-pause-btn" onclick="scPause()" style="border-color:var(--mc-yellow)">PAUSE</button>
+          <button class="sc-btn sc-btn-small" id="sc-reset-btn" onclick="scReset()" style="border-color:var(--mc-red)">RESET</button>
+          <span class="sc-playback-state" id="sc-pb-state">—</span>
+        </div>
+        <div class="sc-playback-row">
+          <span class="sc-label">SPEED</span>
+          <button class="sc-speed-btn" onclick="scSpeed(0.5)">0.5x</button>
+          <button class="sc-speed-btn active" onclick="scSpeed(1)">1x</button>
+          <button class="sc-speed-btn" onclick="scSpeed(2)">2x</button>
+          <button class="sc-speed-btn" onclick="scSpeed(5)">5x</button>
+          <button class="sc-speed-btn" onclick="scSpeed(10)">10x</button>
+        </div>
+        <div class="sc-row" style="margin-top:4px">
+          <span class="sc-label" id="sc-pb-elapsed">T+ 0.0s</span>
+          <span class="sc-label" id="sc-pb-total" style="text-align:right">/ 0.0s</span>
+        </div>
+        <div class="sc-progress">
+          <div class="sc-progress-fill" id="sc-pb-bar" style="width:0%"></div>
+        </div>
+      </div>
+
+      <div class="sc-section" id="sc-summary-section" style="display:none">
+        <div class="sc-section-title">Vehicle Summary</div>
+        <div class="sc-summary" id="sc-summary"></div>
+      </div>
+
     </div>
 
   </section>
@@ -444,14 +594,110 @@ function getCanvasSize(id) {
 function invalidateCanvasSizes() {
   Object.keys(_canvasSizes).forEach(k => delete _canvasSizes[k]);
 }
-const R_KM = 600;         // Kerbin radius km
-const ATM_CEIL_KM = 70;   // atmosphere ceiling km
-const CIRC_SPEED_80KM = 2279; // m/s, circular orbit at 80km
+// Kerbin physics constants — defaults match sim/constants.py, refreshed from
+// /api/constants on connect so Python sim and JS projection stay in sync.
+let R_KM = 600;
+let ATM_CEIL_KM = 70;
+let CIRC_SPEED_80KM = 2279;
+let MU_KERBIN_PROJ = 3.5316e12;
+
+function loadConstants() {
+  fetch('/api/constants').then(r => r.json()).then(c => {
+    R_KM = c.R_KM;
+    ATM_CEIL_KM = c.ATM_CEIL_KM;
+    MU_KERBIN_PROJ = c.MU_KERBIN;
+    CIRC_SPEED_80KM = Math.round(Math.sqrt(c.MU_KERBIN / (c.R_KERBIN + 80000)));
+    PROJ_RHO0 = c.RHO0;
+    PROJ_SCALE_H = c.SCALE_H;
+    PROJ_ATM_CEIL_M = c.ATM_CEIL;
+    if (c.DEFAULT_CDA) PROJ_CDA = c.DEFAULT_CDA;
+    if (c.COAST_MASS_KG) PROJ_MASS_KG = c.COAST_MASS_KG;
+  }).catch(() => {});
+}
+
+// ---------------------------------------------------------------
+// BALLISTIC PROJECTION ENGINE
+// ---------------------------------------------------------------
+// Propagates a state vector (position + velocity) forward in time with
+// no thrust, using 2D gravity-turn equations over a spherical Kerbin.
+// Includes the centripetal correction term (v·cos γ / r) and atmospheric
+// drag (exponential density model, quadratic drag).
+
+// Default drag area (Cd * A) for Perseus 1 — refreshed from /api/constants.
+let PROJ_CDA = 0.22 * 1.80;  // Cd=0.22, A=1.80 m²
+let PROJ_RHO0 = 1.225;       // kg/m³, sea-level density
+let PROJ_SCALE_H = 5000;     // m, atmosphere scale height
+let PROJ_ATM_CEIL_M = 70000; // m, atmosphere ceiling
+let PROJ_MASS_KG = 7000;     // kg, approximate coast mass (post-SRB, mid-burn)
+
+function projectBallisticArc(alt_m, v_horiz_ms, v_vert_ms, dr_km) {
+  const R = R_KM * 1000;
+  const MU = MU_KERBIN_PROJ;
+  const dt = 2.0;
+  const MAX_STEPS = 300;
+
+  let h = alt_m;
+  let dr = dr_km * 1000;
+  let v = Math.sqrt(v_horiz_ms * v_horiz_ms + v_vert_ms * v_vert_ms);
+  let gamma = Math.atan2(v_vert_ms, v_horiz_ms);
+
+  if (v < 1 || h < 50) return [];
+
+  const pts = [{ altitude_km: h / 1000, downrange_km: dr / 1000 }];
+
+  for (let i = 0; i < MAX_STEPS; i++) {
+    const r = R + h;
+    const g = MU / (r * r);
+    const sinG = Math.sin(gamma);
+    const cosG = Math.cos(gamma);
+
+    h += v * sinG * dt;
+    dr += v * cosG * dt;
+
+    // Drag deceleration (along velocity vector, opposing motion)
+    let a_drag = 0;
+    if (h < PROJ_ATM_CEIL_M && h > 0) {
+      const rho = PROJ_RHO0 * Math.exp(-h / PROJ_SCALE_H);
+      a_drag = 0.5 * rho * v * v * PROJ_CDA / PROJ_MASS_KG;
+    }
+
+    // Gravity + drag velocity update
+    v += (-g * sinG - a_drag) * dt;
+    gamma += (cosG * (v / r - g / v)) * dt;
+
+    if (v < 0.5) break;
+
+    if (h <= 0) {
+      pts.push({ altitude_km: 0, downrange_km: dr / 1000 });
+      break;
+    }
+
+    pts.push({ altitude_km: h / 1000, downrange_km: dr / 1000 });
+    if (h > 200000) break;
+  }
+
+  return pts;
+}
+
+function computeNominalCoast() {
+  if (!nominalTraj || nominalTraj.length < 2) return [];
+  const last = nominalTraj[nominalTraj.length - 1];
+  const pfv = last.pitch_from_vertical || 50;
+  const gamma_rad = (90 - pfv) * Math.PI / 180;
+  const vel = last.velocity || 643;
+  return projectBallisticArc(
+    (last.altitude_km || 14.88) * 1000,
+    vel * Math.cos(gamma_rad),
+    vel * Math.sin(gamma_rad),
+    last.downrange_km || 8.31
+  );
+}
 
 // ---------------------------------------------------------------
 // GLOBAL STATE
 // ---------------------------------------------------------------
 let nominalTraj = [];       // [{altitude_km, downrange_km, velocity, ...}]
+let nominalCoast = [];      // ballistic coast extension after core burnout
 let actualTraj  = [];       // accumulated from telemetry
 let latestState = {};       // latest telemetry snapshot
 let latestDirector = {};    // latest flight director output
@@ -467,6 +713,7 @@ const socket = io({ transports: ['websocket', 'polling'] });
 
 socket.on('connect', () => {
   console.log('Socket.IO connected');
+  loadConstants();
   socket.emit('request_nominal');
 });
 
@@ -479,7 +726,9 @@ socket.on('nominal', data => {
   const overlay = el('loading-overlay');
   if (overlay) overlay.style.display = 'none';
   nominalTraj = data.trajectory || [];
-  console.log('Nominal trajectory received:', nominalTraj.length, 'points');
+  nominalCoast = computeNominalCoast();
+  console.log('Nominal trajectory received:', nominalTraj.length, 'points,',
+              nominalCoast.length, 'coast points');
   renderAll();
 });
 
@@ -664,15 +913,31 @@ function drawGlobe() {
   if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
   const ctx = canvas.getContext('2d');
 
-  // --- Dynamic zoom: compute view extent from trajectory ---
+  // Compute ballistic projection from current velocity state
+  let projectionArc = [];
+  if (actualTraj.length > 0 && (latestState.altitude || 0) > 100) {
+    const v_h = latestState.v_horiz || 0;
+    const v_v = latestState.v_vert || 0;
+    const lastPt = actualTraj[actualTraj.length - 1];
+    if (Math.abs(v_h) > 0.1 || Math.abs(v_v) > 0.1) {
+      projectionArc = projectBallisticArc(
+        latestState.altitude, v_h, v_v, lastPt.downrange_km || 0
+      );
+    }
+  }
+
+  // --- Dynamic zoom: compute view extent from trajectory + projection ---
   const curAlt = (latestState.altitude || 0) / 1000;
   const curDR = actualTraj.length > 0 ? (actualTraj[actualTraj.length - 1].downrange_km || 0) : 0;
   let maxVisAlt = Math.max(curAlt, 0);
   let maxVisDR = Math.max(curDR, 0);
-  for (let i = 0; i < actualTraj.length; i++) {
-    const p = actualTraj[i];
-    if (p.altitude_km > maxVisAlt) maxVisAlt = p.altitude_km;
-    if (p.downrange_km > maxVisDR) maxVisDR = p.downrange_km;
+  const extentSources = [actualTraj, nominalCoast, projectionArc];
+  for (let s = 0; s < extentSources.length; s++) {
+    const src = extentSources[s];
+    for (let i = 0; i < src.length; i++) {
+      if (src[i].altitude_km > maxVisAlt) maxVisAlt = src[i].altitude_km;
+      if (src[i].downrange_km > maxVisDR) maxVisDR = src[i].downrange_km;
+    }
   }
 
   // Target view altitude: fit trajectory with headroom, minimum 12km
@@ -761,30 +1026,21 @@ function drawGlobe() {
     ctx.setLineDash([]);
   }
 
+  // Nominal coast extension (lighter blue, after core burnout)
+  drawPath(nominalCoast, 'rgba(30,136,229,0.25)', [4, 6], 1.2);
+
   // Nominal trajectory (dashed blue)
   drawPath(nominalTraj, 'rgba(30,136,229,0.5)', [6, 5], 1.5);
 
-  // Abort projection: if periapsis is very negative, show where capsule lands
-  const pe_km = (latestState.periapsis || 0) / 1000;
-  if (pe_km < -50 && actualTraj.length > 0 && latestState.altitude > 0) {
-    // Simple abort arc: project from current position downward along a parabola
-    // Draw a curve back to the surface (rough: current alt → 0, at same downrange angle)
-    const last = actualTraj[actualTraj.length - 1];
-    const abortPts = [];
-    for (let i = 0; i <= 20; i++) {
-      const f = i / 20;
-      const alt = last.altitude_km * (1 - f * f);          // parabolic descent
-      const dr  = last.downrange_km + f * last.altitude_km * 0.3; // rough downrange
-      if (alt >= 0) abortPts.push({ altitude_km: alt, downrange_km: dr });
-    }
-    drawPath(abortPts, 'rgba(239,83,80,0.55)', [5, 4], 1.5);
-    // Landing zone marker
-    if (abortPts.length) {
-      const lp = abortPts[abortPts.length - 1];
-      const [lx, ly] = toXY(lp.downrange_km, lp.altitude_km);
-      ctx.beginPath(); ctx.arc(lx, ly, 5, 0, Math.PI*2);
-      ctx.fillStyle = 'rgba(239,83,80,0.4)'; ctx.fill();
-      ctx.strokeStyle = 'rgba(239,83,80,0.8)'; ctx.lineWidth = 1.5; ctx.stroke();
+  // Ballistic projection from current velocity state (amber)
+  drawPath(projectionArc, 'rgba(255,183,77,0.55)', [5, 4], 1.5);
+  if (projectionArc.length > 1) {
+    const ep = projectionArc[projectionArc.length - 1];
+    if (ep.altitude_km <= 0.05) {
+      const [ex, ey] = toXY(ep.downrange_km, ep.altitude_km);
+      ctx.beginPath(); ctx.arc(ex, ey, 4.5, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,183,77,0.35)'; ctx.fill();
+      ctx.strokeStyle = 'rgba(255,183,77,0.8)'; ctx.lineWidth = 1.5; ctx.stroke();
     }
   }
 
@@ -861,12 +1117,25 @@ function drawTrajectoryPlot() {
   ctx.fillStyle = '#07090e';
   ctx.fillRect(0, 0, W, H);
 
+  // Compute ballistic projection for this frame
+  let trajProjPts = [];
+  if (actualTraj.length > 0 && (latestState.altitude || 0) > 100) {
+    const v_h = latestState.v_horiz || 0;
+    const v_v = latestState.v_vert || 0;
+    const lastA = actualTraj[actualTraj.length - 1];
+    if (Math.abs(v_h) > 0.1 || Math.abs(v_v) > 0.1) {
+      trajProjPts = projectBallisticArc(
+        latestState.altitude, v_h, v_v, lastA.downrange_km || 0
+      );
+    }
+  }
+
   const pad = { l: 46, r: 16, t: 32, b: 36 };
   const gw = W - pad.l - pad.r;
   const gh = H - pad.t - pad.b;
 
-  // Auto-range from data
-  const allPts = [...nominalTraj, ...actualTraj];
+  // Auto-range from data including projection and nominal coast
+  const allPts = [...nominalTraj, ...nominalCoast, ...actualTraj, ...trajProjPts];
   const maxDR  = Math.max(10, ...allPts.map(p => p.downrange_km || 0)) * 1.08;
   const maxAlt = Math.max(18, ...allPts.map(p => p.altitude_km  || 0)) * 1.08;
 
@@ -921,8 +1190,14 @@ function drawTrajectoryPlot() {
     ctx.stroke(); ctx.setLineDash([]);
   }
 
-  // Nominal
+  // Nominal coast extension (lighter, behind nominal powered)
+  drawTraj(nominalCoast, 'rgba(30,136,229,0.25)', [4, 6], 1.2);
+
+  // Nominal powered trajectory
   drawTraj(nominalTraj, 'rgba(30,136,229,0.5)', [6, 5], 1.5);
+
+  // Ballistic projection from current velocity (amber)
+  drawTraj(trajProjPts, 'rgba(255,183,77,0.55)', [5, 4], 1.5);
 
   // Actual
   drawTraj(actualTraj, '#43a047', [], 2);
@@ -1095,6 +1370,148 @@ requestAnimationFrame(animate);
 renderAll();
 
 // ---------------------------------------------------------------
+// SCENARIO CONTROL
+// ---------------------------------------------------------------
+let scenarioPresets = [];
+let currentPlaybackStatus = null;
+
+function toggleScenarioPanel() {
+  const panel = el('scenario-panel');
+  const btn = el('scenario-btn');
+  if (panel.classList.contains('open')) {
+    panel.classList.remove('open');
+    btn.classList.remove('active');
+  } else {
+    panel.classList.add('open');
+    btn.classList.add('active');
+    if (scenarioPresets.length === 0) fetchPresets();
+  }
+}
+
+function fetchPresets() {
+  fetch('/api/scenarios').then(r => r.json()).then(data => {
+    scenarioPresets = data.scenarios || [];
+    const sel = el('sc-preset');
+    sel.innerHTML = '<option value="">Custom</option>';
+    scenarioPresets.forEach(s => {
+      const opt = document.createElement('option');
+      opt.value = s.name;
+      opt.textContent = s.label;
+      sel.appendChild(opt);
+    });
+  }).catch(e => console.error('Failed to fetch presets:', e));
+}
+
+function onPresetChange() {
+  const val = el('sc-preset').value;
+  const fields = el('sc-custom-fields');
+  if (val) {
+    fields.style.opacity = '0.4';
+    fields.style.pointerEvents = 'none';
+    const preset = scenarioPresets.find(s => s.name === val);
+    if (preset) {
+      el('sc-booster-type').value = preset.booster_type;
+      el('sc-n-boosters').value = preset.n_boosters;
+      el('sc-booster-pct').value = preset.booster_pct;
+      el('sc-booster-pct-val').textContent = preset.booster_pct + '%';
+      el('sc-pitch-program').value = preset.pitch_program;
+    }
+  } else {
+    fields.style.opacity = '1';
+    fields.style.pointerEvents = '';
+  }
+}
+
+function loadScenario() {
+  const preset = el('sc-preset').value;
+  let body;
+  if (preset) {
+    body = { preset: preset };
+  } else {
+    body = {
+      name: 'Custom',
+      booster_type: el('sc-booster-type').value,
+      n_boosters: parseInt(el('sc-n-boosters').value) || 2,
+      booster_pct: parseFloat(el('sc-booster-pct').value) || 20,
+      extra_payload: parseFloat(el('sc-extra-payload').value) || 0,
+      pitch_program: el('sc-pitch-program').value,
+      noise_pct: (parseFloat(el('sc-noise').value) || 0) / 100,
+    };
+  }
+  // Pass noise from slider for presets too
+  if (preset) body.noise_pct = (parseFloat(el('sc-noise').value) || 0) / 100;
+
+  fetch('/api/scenario/load', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(r => r.json()).then(data => {
+    if (data.ok) {
+      actualTraj = [];
+      updateScenarioSummary(data.summary);
+      // Auto-start playback
+      fetch('/api/scenario/start', { method: 'POST' });
+    } else {
+      console.error('Scenario load error:', data.error);
+      alert('Scenario error: ' + (data.error || 'unknown'));
+    }
+  }).catch(e => console.error('Scenario load failed:', e));
+}
+
+function updateScenarioSummary(summary) {
+  if (!summary) return;
+  const sec = el('sc-summary-section');
+  sec.style.display = '';
+  el('sc-summary').innerHTML =
+    '<b>Mass:</b> ' + summary.liftoff_mass_t + ' t &nbsp; ' +
+    '<b>TWR:</b> ' + summary.pad_twr_asl + '<br/>' +
+    '<b>SRB burn:</b> ' + summary.srb_burn_time_s + 's &nbsp; ' +
+    '<b>Stage dV:</b> ' + summary.mission_stage_dv_ms + ' m/s<br/>' +
+    '<b>Apo @B/O:</b> ' + summary.apoapsis_km + ' km &nbsp; ' +
+    '<b>Pe:</b> ' + summary.periapsis_km + ' km';
+}
+
+function scPlay()   { fetch('/api/scenario/start',  { method:'POST' }); }
+function scPause()  { fetch('/api/scenario/pause',  { method:'POST' }); }
+function scReset()  {
+  fetch('/api/scenario/reset', { method:'POST' }).then(() => {
+    actualTraj = [];
+    renderAll();
+  });
+}
+
+function scSpeed(s) {
+  fetch('/api/scenario/speed', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ speed: s }),
+  });
+  document.querySelectorAll('.sc-speed-btn').forEach(b => {
+    b.classList.toggle('active', parseFloat(b.textContent) === s);
+  });
+}
+
+function updatePlaybackUI(pb) {
+  if (!pb) return;
+  currentPlaybackStatus = pb;
+  el('sc-pb-state').textContent = pb.state.toUpperCase();
+  el('sc-pb-elapsed').textContent = 'T+ ' + pb.elapsed.toFixed(1) + 's';
+  el('sc-pb-total').textContent = '/ ' + pb.total.toFixed(1) + 's';
+  const pct = pb.total > 0 ? Math.min(100, (pb.elapsed / pb.total) * 100) : 0;
+  el('sc-pb-bar').style.width = pct + '%';
+}
+
+socket.on('scenario_loaded', data => {
+  if (data.summary) updateScenarioSummary(data.summary);
+  actualTraj = [];
+  renderAll();
+});
+
+socket.on('playback_status', data => {
+  updatePlaybackUI(data);
+});
+
+// ---------------------------------------------------------------
 // HOUSTON UI INTEGRATION HOOKS
 // ---------------------------------------------------------------
 // Expose a global API so the Telemachus Houston UI (or any host
@@ -1129,6 +1546,12 @@ window.MissionControl = {
       p.style.display = (name === 'all' || p.dataset.panel === name) ? '' : 'none';
     });
   },
+
+  loadScenario(params) { return fetch('/api/scenario/load', {
+    method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(params)
+  }).then(r => r.json()); },
+  getPlaybackStatus() { return currentPlaybackStatus; },
+  controlPlayback(action, speed) { socket.emit('playback_control', {action, speed}); },
 };
 
 // Dispatch a standard custom event on each telemetry update

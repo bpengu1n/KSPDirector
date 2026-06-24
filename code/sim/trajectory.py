@@ -49,7 +49,7 @@ class TrajectoryPoint:
     mass:          float    # t, current vehicle mass
     apoapsis:      float    # km, apoapsis altitude (from instantaneous orbit)
     periapsis:     float    # km, periapsis altitude (from instantaneous orbit)
-    phase:         str      # 'BOOST', 'CORE', 'COAST'
+    phase:         str      # 'BOOST', 'CORE', 'TERRIER', 'COAST_APO', 'CIRCULARIZE', 'ORBIT', 'COAST'
     drag_loss_cum: float    # m/s, cumulative drag velocity loss
     grav_loss_cum: float    # m/s, cumulative gravity loss
 
@@ -180,11 +180,21 @@ def integrate(
     vehicle,                           # VehicleConfig
     pitch_program: Callable = pitch_nominal,
     dt: float = 0.02,                  # s, timestep
-    t_max: float = 400.0,              # s, max integration time
+    t_max: float = 600.0,              # s, max integration time
     sample_every_n: int = 25,          # save a point every N steps
+    target_orbit_km: float = 80.0,     # target orbit altitude (km)
 ) -> TrajectoryResult:
     """
-    Run the ascent trajectory simulation from liftoff to core burnout.
+    Run the full ascent trajectory simulation: boosters → core → Terrier → orbit.
+
+    Phases modelled:
+      BOOST        SRBs + Swivel burning
+      CORE         Swivel only, post booster sep
+      TERRIER      Terrier burns prograde after core sep
+      COAST_APO    Unpowered coast to apoapsis
+      CIRCULARIZE  Terrier burns at apoapsis to raise periapsis
+      ORBIT        Stable orbit, coasting
+      COAST        Unpowered suborbital coast (if Terrier fuel exhausted)
 
     Parameters
     ----------
@@ -199,6 +209,8 @@ def integrate(
         Maximum simulation time before forced termination.
     sample_every_n : int
         Save a full TrajectoryPoint every this many steps (to limit memory).
+    target_orbit_km : float
+        Target circular orbit altitude in km.
 
     Returns
     -------
@@ -209,6 +221,9 @@ def integrate(
     throttle = vehicle.booster_pct / 100.0
     cda = vehicle.effective_cda
 
+    target_apo_m = target_orbit_km * 1000.0
+    target_pe_m = (target_orbit_km - 5.0) * 1000.0
+
     # Build initial state
     t = 0.0
     h = 0.0          # altitude, m
@@ -218,16 +233,23 @@ def integrate(
 
     boost_prop = vehicle.booster_set_prop * 1000   # kg
     core_prop  = vehicle.core_stage_prop * 1000    # kg
+    terrier_prop = TANKS["flt800"]["prop_mass"] * 1000  # kg, mission stage
     mass = vehicle.liftoff_mass_t * 1000           # kg
 
     boosters_attached = True
+    core_burned_out = False
+    terrier_phase = None   # None → "TERRIER" → "COAST_APO" → "CIRCULARIZE" → "ORBIT"
     free_turn = False
     step = 0
     drag_loss = 0.0
     grav_loss = 0.0
+    prev_v_vert = None
 
     booster_sep_event: Optional[SeparationEvent] = None
+    core_sep_event: Optional[SeparationEvent] = None
     core_burnout_pt: Optional[TrajectoryPoint] = None
+    ap_at_burnout: Optional[float] = None
+    pe_at_burnout: Optional[float] = None
     max_q_pt: Optional[TrajectoryPoint] = None
     max_q_val = 0.0
 
@@ -252,17 +274,25 @@ def integrate(
     while t < t_max:
         g = gravity(h)
 
-        # --- Engine thrust (engine_thrust_at returns kN, mdot in kg/s) ---
-        T_sw_kN, mdot_sw_kgs = engine_thrust_at(h, "swivel", 1.0)
-        T_sw_N = T_sw_kN * 1000.0      # N
+        # --- Engine thrust based on flight phase ---
+        T_total_N = 0.0
+        mdot_terrier = 0.0
 
-        T_b_N = 0.0; mdot_b_kgs = 0.0
-        if boosters_attached and boost_prop > 0.01:
-            T_b_kN, mdot_b_each = engine_thrust_at(h, vehicle.booster_type, throttle)
-            T_b_N = vehicle.n_boosters * T_b_kN * 1000.0    # N
-            mdot_b_kgs = vehicle.n_boosters * mdot_b_each   # kg/s
+        if terrier_phase in ("TERRIER", "CIRCULARIZE") and terrier_prop > 0:
+            T_kN, mdot_terrier = engine_thrust_at(h, "terrier", 1.0)
+            T_total_N = T_kN * 1000.0
+        elif not core_burned_out:
+            T_sw_kN, mdot_sw_kgs = engine_thrust_at(h, "swivel", 1.0)
+            T_sw_N = T_sw_kN * 1000.0
 
-        T_total_N = T_sw_N + T_b_N
+            T_b_N = 0.0; mdot_b_kgs = 0.0
+            if boosters_attached and boost_prop > 0.01:
+                T_b_kN, mdot_b_each = engine_thrust_at(h, vehicle.booster_type, throttle)
+                T_b_N = vehicle.n_boosters * T_b_kN * 1000.0
+                mdot_b_kgs = vehicle.n_boosters * mdot_b_each
+
+            T_total_N = T_sw_N + T_b_N
+
         D_N = atm.drag_force(h, v, cda)
 
         # --- Dynamic pressure ---
@@ -271,8 +301,12 @@ def integrate(
             max_q_val = q
             max_q_pt = make_point("BOOST" if boosters_attached else "CORE")
 
-        # --- Pitch program ---
-        pg_deg = pitch_program(h)
+        # --- Pitch / gravity turn ---
+        if not core_burned_out:
+            pg_deg = pitch_program(h)
+        else:
+            pg_deg = None
+
         if pg_deg is not None and not free_turn:
             gamma = math.radians(pg_deg)
             dv  = (T_total_N - D_N) / mass - g * math.sin(gamma)
@@ -281,62 +315,139 @@ def integrate(
         else:
             free_turn = True
             dv  = (T_total_N - D_N) / mass - g * math.sin(gamma)
-            dgamma = -g * math.cos(gamma) / v if v > 0.5 else 0.0
+            if core_burned_out and v > 0.5:
+                r = R_KERBIN + h
+                dgamma = math.cos(gamma) * (v / r - g / v)
+            elif v > 0.5:
+                dgamma = -g * math.cos(gamma) / v
+            else:
+                dgamma = 0.0
             dh  = v * math.sin(gamma)
 
         # Downrange: horizontal displacement
         ddr = v * math.cos(gamma)
 
-        # Loss bookkeeping
-        drag_loss += (D_N / mass) * dt
-        grav_loss += g * math.sin(gamma) * dt
+        # Loss bookkeeping during any powered phase
+        if T_total_N > 0:
+            drag_loss += (D_N / mass) * dt
+            grav_loss += g * math.sin(gamma) * dt
 
         # --- Integrate ---
         v     += dv * dt
         h     += dh * dt
         dr    += ddr * dt
-        gamma  = max(gamma + dgamma * dt, 0.0)
-
-        dm_sw = mdot_sw_kgs * dt
-        dm_b  = mdot_b_kgs * dt if boosters_attached else 0.0
-
-        boost_prop -= dm_b
-        core_prop  -= dm_sw
-
-        # --- Booster burnout -> separation ---
-        if boosters_attached and boost_prop <= 0.0:
-            boost_prop = 0.0
-            boosters_attached = False
-            # Jettison dry casing + decouplers
-            mass -= dm_b
-            sep_inert_kg = vehicle.booster_set_dry * 1000
-            mass -= sep_inert_kg
-            ap, pe = orbital_params(h, v, gamma)
-            booster_sep_event = SeparationEvent(
-                t=t, altitude=h, velocity=v, gamma=gamma,
-                mass=mass / 1000.0, apoapsis=ap, periapsis=pe,
-            )
+        if terrier_phase == "TERRIER":
+            frac = min(1.0, h / target_apo_m)
+            gamma_floor = math.radians(15.0) * (1.0 - frac)
+            gamma = max(gamma + dgamma * dt, gamma_floor)
+        elif terrier_phase == "CIRCULARIZE":
+            gamma = max(gamma + dgamma * dt, 0.0)
+        elif core_burned_out:
+            gamma = gamma + dgamma * dt
         else:
-            mass -= dm_b
+            gamma = max(gamma + dgamma * dt, 0.0)
 
-        mass -= dm_sw
+        # --- Propellant consumption & staging ---
+        if terrier_phase in ("TERRIER", "CIRCULARIZE") and terrier_prop > 0:
+            dm = mdot_terrier * dt
+            terrier_prop -= dm
+            mass -= dm
+            if terrier_prop <= 0:
+                terrier_prop = 0.0
+                if terrier_phase == "TERRIER":
+                    terrier_phase = "COAST_APO"
+                else:
+                    terrier_phase = "ORBIT" if orbital_params(h, v, gamma)[1] > target_pe_m / 1000.0 else "COAST"
+
+        elif not core_burned_out:
+            dm_sw = mdot_sw_kgs * dt
+            dm_b  = mdot_b_kgs * dt if boosters_attached else 0.0
+
+            boost_prop -= dm_b
+            core_prop  -= dm_sw
+
+            # Booster burnout → separation
+            if boosters_attached and boost_prop <= 0.0:
+                boost_prop = 0.0
+                boosters_attached = False
+                mass -= dm_b
+                sep_inert_kg = vehicle.booster_set_dry * 1000
+                mass -= sep_inert_kg
+                ap, pe = orbital_params(h, v, gamma)
+                booster_sep_event = SeparationEvent(
+                    t=t, altitude=h, velocity=v, gamma=gamma,
+                    mass=mass / 1000.0, apoapsis=ap, periapsis=pe,
+                )
+            else:
+                mass -= dm_b
+
+            mass -= dm_sw
+
+            # Core burnout → core separation → Terrier ignition
+            if core_prop <= 0.0:
+                core_prop = 0.0
+                core_burned_out = True
+                core_burnout_pt = make_point("CORE")
+                ap_at_burnout, pe_at_burnout = orbital_params(h, v, gamma)
+                # Jettison core stage dry mass (tank, Swivel, decoupler, fins, extra payload)
+                core_sep_kg = (vehicle.core_stage_dry + vehicle.fin_mass +
+                               vehicle.extra_payload) * 1000
+                mass -= core_sep_kg
+                ap, pe = orbital_params(h, v, gamma)
+                core_sep_event = SeparationEvent(
+                    t=t, altitude=h, velocity=v, gamma=gamma,
+                    mass=mass / 1000.0, apoapsis=ap, periapsis=pe,
+                )
+                terrier_phase = "TERRIER"
+
+        # --- Terrier phase transitions ---
+        if terrier_phase == "TERRIER" and terrier_prop > 0:
+            ap_now = orbital_params(h, v, gamma)[0]
+            if ap_now >= target_orbit_km:
+                terrier_phase = "COAST_APO"
+
+        if terrier_phase == "COAST_APO":
+            v_v = v * math.sin(gamma)
+            if prev_v_vert is not None and prev_v_vert > 0 and v_v <= 0:
+                terrier_phase = "CIRCULARIZE" if terrier_prop > 0 else "COAST"
+            prev_v_vert = v_v
+
+        if terrier_phase == "CIRCULARIZE" and terrier_prop > 0:
+            pe_now = orbital_params(h, v, gamma)[1]
+            if pe_now >= target_orbit_km - 5.0:
+                terrier_phase = "ORBIT"
+
         t += dt
         step += 1
 
-        phase = "BOOST" if boosters_attached else "CORE"
+        # --- Phase label ---
+        if terrier_phase:
+            phase = terrier_phase
+        elif boosters_attached:
+            phase = "BOOST"
+        elif not core_burned_out:
+            phase = "CORE"
+        else:
+            phase = "COAST"
+
         if step % sample_every_n == 0:
             sampled_pts.append(make_point(phase))
 
-        if core_prop <= 0.0 or h < -100.0:
-            core_burnout_pt = make_point("CORE")
+        if h < -100.0:
+            if not core_burned_out:
+                core_burnout_pt = make_point("CORE")
+                ap_at_burnout, pe_at_burnout = orbital_params(h, v, gamma)
             break
 
-    # Final orbital params
-    ap_final, pe_final = orbital_params(h, v, gamma)
+    # Orbital params at core burnout (not end of flight)
+    if ap_at_burnout is not None:
+        ap_final, pe_final = ap_at_burnout, pe_at_burnout
+    else:
+        ap_final, pe_final = orbital_params(h, v, gamma)
 
     return TrajectoryResult(
         points=sampled_pts,
-        all_points=sampled_pts,   # same — all_points alias for compatibility
+        all_points=sampled_pts,
         booster_sep=booster_sep_event,
         core_burnout=core_burnout_pt,
         max_q_point=max_q_pt,
