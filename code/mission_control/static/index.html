@@ -715,23 +715,26 @@ function buildPhaseBands(traj) {
   if (!traj || traj.length < 2) return [];
   const bands = [];
   let curPhase = traj[0].phase;
-  let startT = traj[0].t_s;
+  let startT = traj[0].t_s != null ? traj[0].t_s : traj[0].t;
   for (let i = 1; i < traj.length; i++) {
-    if (traj[i].phase !== curPhase) {
+    const pt = traj[i];
+    const t = pt.t_s != null ? pt.t_s : pt.t;
+    if (pt.phase !== curPhase) {
       bands.push({
         label: PHASE_LABELS[curPhase] || curPhase,
         start: startT,
-        end: traj[i].t_s,
+        end: t,
         color: PHASE_COLORS[curPhase] || 'rgba(255,255,255,0.06)',
       });
-      curPhase = traj[i].phase;
-      startT = traj[i].t_s;
+      curPhase = pt.phase;
+      startT = t;
     }
   }
+  const lastPt = traj[traj.length - 1];
   bands.push({
     label: PHASE_LABELS[curPhase] || curPhase,
     start: startT,
-    end: traj[traj.length - 1].t_s,
+    end: lastPt.t_s != null ? lastPt.t_s : lastPt.t,
     color: PHASE_COLORS[curPhase] || 'rgba(255,255,255,0.06)',
   });
   return bands;

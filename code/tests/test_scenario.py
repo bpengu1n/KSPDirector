@@ -452,6 +452,36 @@ class TestScriptedDirectorIntegration(unittest.TestCase):
         self.assertIn("advisory", result)
         self.assertIn("gates", result)
 
+    def test_no_false_circularize_during_terrier_ascent(self):
+        """detect_phase must not return CIRCULARIZE when apoapsis first passes
+        60km during Terrier burn. At that point v_vert is ~211 m/s — the vehicle
+        is still ascending, not near apoapsis."""
+        from mission_control.nominal_compare import detect_phase, FlightPhase
+        state = {
+            "altitude": 48600.0, "apoapsis": 60200.0, "periapsis": -195700.0,
+            "mission_time": 204.5, "solid_fuel": 0.0, "liquid_fuel": 200.0,
+            "throttle": 1.0, "pitch": 50.0, "velocity": 1100.0,
+            "v_horiz": 900.0, "v_vert": 211.0,
+        }
+        phase = detect_phase(state, FlightPhase.TERRIER)
+        self.assertEqual(phase, FlightPhase.TERRIER,
+            f"At 48.6km alt / 60.2km apo / v_vert=211 m/s, phase should be TERRIER "
+            f"(still ascending), got {phase.value}")
+
+    def test_circularize_detected_near_apoapsis(self):
+        """detect_phase should return CIRCULARIZE when near apoapsis
+        (v_vert near zero) with apo >= 60km and pe < 65km."""
+        from mission_control.nominal_compare import detect_phase, FlightPhase
+        state = {
+            "altitude": 80000.0, "apoapsis": 80500.0, "periapsis": 20000.0,
+            "mission_time": 472.0, "solid_fuel": 0.0, "liquid_fuel": 100.0,
+            "throttle": 1.0, "pitch": 0.5, "velocity": 2200.0,
+            "v_horiz": 2200.0, "v_vert": 3.0,
+        }
+        phase = detect_phase(state, FlightPhase.TERRIER)
+        self.assertEqual(phase, FlightPhase.CIRCULARIZE,
+            f"At 80km alt / v_vert~0 / pe=20km, should be CIRCULARIZE, got {phase.value}")
+
     def test_nominal_regenerates_for_scenario(self):
         """When a scenario with different params is loaded, the sim produces
         different nominal numbers."""

@@ -203,8 +203,12 @@ def detect_phase(state: dict, prev_phase: FlightPhase = FlightPhase.UNKNOWN) -> 
         return FlightPhase.COAST
 
     # Powered on liquid fuel -------------------------------------------------
-    # Circularizing: apoapsis near target, still burning to raise periapsis
-    if apo_km >= 60 and pe_km < 65:
+    v_vert = state.get("v_vert") or 0
+
+    # Circularizing: near apoapsis (v_vert near zero), burning to raise periapsis.
+    # The v_vert < 50 guard prevents false CIRCULARIZE during Terrier ascent
+    # when apo first passes 60km but v_vert is still 200+ m/s.
+    if apo_km >= 60 and pe_km < 65 and abs(v_vert) < 50:
         return FlightPhase.CIRCULARIZE
 
     # Orbit: ap and pe both above atmosphere (redundant with top check but clean)
