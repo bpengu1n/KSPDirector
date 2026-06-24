@@ -457,6 +457,8 @@ let latestState = {};       // latest telemetry snapshot
 let latestDirector = {};    // latest flight director output
 let missionStartTime = null;
 let simMode = false;
+let _globeViewAlt = 12;
+let _globeZoomMul = 1.0;
 
 // ---------------------------------------------------------------
 // SOCKET.IO CONNECTION
@@ -661,12 +663,38 @@ function drawGlobe() {
   const {w: W, h: H} = getCanvasSize('globe-canvas');  // P2-09: cached
   if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
   const ctx = canvas.getContext('2d');
-  const cx = W * 0.42, cy = H * 0.56;
 
-  // Scale: show out to ~220km altitude
-  const maxAlt_km = 220;
-  const scale = Math.min(W, H) * 0.36 / (R_KM + maxAlt_km);
+  // --- Dynamic zoom: compute view extent from trajectory ---
+  const curAlt = (latestState.altitude || 0) / 1000;
+  const curDR = actualTraj.length > 0 ? (actualTraj[actualTraj.length - 1].downrange_km || 0) : 0;
+  let maxVisAlt = Math.max(curAlt, 0);
+  let maxVisDR = Math.max(curDR, 0);
+  for (let i = 0; i < actualTraj.length; i++) {
+    const p = actualTraj[i];
+    if (p.altitude_km > maxVisAlt) maxVisAlt = p.altitude_km;
+    if (p.downrange_km > maxVisDR) maxVisDR = p.downrange_km;
+  }
+
+  // Target view altitude: fit trajectory with headroom, minimum 12km
+  const targetAlt = Math.max(12, maxVisAlt * 1.6 + 3, maxVisDR * 0.8);
+  _globeViewAlt += (targetAlt - _globeViewAlt) * 0.04;
+
+  const viewAlt = _globeViewAlt * _globeZoomMul;
+  const clampedView = Math.max(5, Math.min(300, viewAlt));
+
+  // Scale: clampedView km fills ~70% of canvas height
+  const scale = (Math.min(W, H) * 0.35) / clampedView;
   const R_px = R_KM * scale;
+
+  // --- Dynamic pan: center view on trajectory midpoint ---
+  const focusAlt = maxVisAlt > 0 ? maxVisAlt * 0.45 : 2;
+  const focusDR = maxVisDR > 0 ? maxVisDR * 0.45 : 0;
+  const focusAngle = focusDR / R_KM;
+  const focusR = (R_KM + focusAlt) * scale;
+  const fx = focusR * Math.sin(focusAngle);
+  const fy = -focusR * Math.cos(focusAngle);
+  const cx = W * 0.42 - fx;
+  const cy = H * 0.50 - fy;
 
   // Space background
   ctx.fillStyle = '#050810';
@@ -804,6 +832,22 @@ function drawGlobe() {
     ctx.fillText(`${alt_km}km`, cx + 4, cy - rr + 10);
   });
 }
+
+// Globe zoom: scroll wheel to zoom in/out, double-click to reset
+(function initGlobeZoom() {
+  const c = el('globe-canvas');
+  if (!c) return;
+  c.addEventListener('wheel', function(e) {
+    e.preventDefault();
+    _globeZoomMul *= (e.deltaY > 0) ? 1.12 : 0.89;
+    _globeZoomMul = Math.max(0.15, Math.min(25, _globeZoomMul));
+    renderAll();
+  }, { passive: false });
+  c.addEventListener('dblclick', function() {
+    _globeZoomMul = 1.0;
+    renderAll();
+  });
+})();
 
 // ---------------------------------------------------------------
 // CANVAS: TRAJECTORY PLOT (altitude vs downrange)
@@ -1042,7 +1086,7 @@ window.addEventListener('resize', () => {
 // ANIMATION LOOP
 // ---------------------------------------------------------------
 function animate() {
-  drawTimeline();  // always tick for the MET cursor
+  renderAll();
   requestAnimationFrame(animate);
 }
 requestAnimationFrame(animate);
