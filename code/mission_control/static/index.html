@@ -447,11 +447,84 @@ function invalidateCanvasSizes() {
 const R_KM = 600;         // Kerbin radius km
 const ATM_CEIL_KM = 70;   // atmosphere ceiling km
 const CIRC_SPEED_80KM = 2279; // m/s, circular orbit at 80km
+const MU_KERBIN_PROJ = 3.5316e12; // m³/s², Kerbin gravitational parameter
+
+// ---------------------------------------------------------------
+// BALLISTIC PROJECTION ENGINE
+// ---------------------------------------------------------------
+// Propagates a state vector (position + velocity) forward in time with
+// no thrust, using 2D gravity-turn equations over a spherical Kerbin.
+// Includes the centripetal correction term (v·cos γ / r) that accounts
+// for the changing direction of "down" as the craft moves around the
+// planet — without it, even a circular orbit would appear to dive.
+
+function projectBallisticArc(alt_m, v_horiz_ms, v_vert_ms, dr_km) {
+  const R = 600000;
+  const MU = MU_KERBIN_PROJ;
+  const dt = 2.0;
+  const MAX_STEPS = 300;
+
+  let h = alt_m;
+  let dr = dr_km * 1000;
+  let v = Math.sqrt(v_horiz_ms * v_horiz_ms + v_vert_ms * v_vert_ms);
+  let gamma = Math.atan2(v_vert_ms, v_horiz_ms);
+
+  if (v < 1 || h < 50) return [];
+
+  const pts = [{ altitude_km: h / 1000, downrange_km: dr / 1000 }];
+
+  for (let i = 0; i < MAX_STEPS; i++) {
+    const r = R + h;
+    const g = MU / (r * r);
+    const sinG = Math.sin(gamma);
+    const cosG = Math.cos(gamma);
+
+    // Position update (use current v, gamma — matches sim integration order)
+    const dh = v * sinG;
+    const ddr = v * cosG;
+    h += dh * dt;
+    dr += ddr * dt;
+
+    // Velocity update: gravity-turn with centripetal correction
+    //   dv/dt     = -g sin γ
+    //   dγ/dt     = cos γ · (v/r - g/v)
+    // At circular orbit v²=gr, both terms cancel and dγ/dt = 0.
+    v += (-g * sinG) * dt;
+    gamma += (cosG * (v / r - g / v)) * dt;
+
+    if (v < 0.5) break;
+
+    if (h <= 0) {
+      pts.push({ altitude_km: 0, downrange_km: dr / 1000 });
+      break;
+    }
+
+    pts.push({ altitude_km: h / 1000, downrange_km: dr / 1000 });
+    if (h > 200000) break;
+  }
+
+  return pts;
+}
+
+function computeNominalCoast() {
+  if (!nominalTraj || nominalTraj.length < 2) return [];
+  const last = nominalTraj[nominalTraj.length - 1];
+  const pfv = last.pitch_from_vertical || 50;
+  const gamma_rad = (90 - pfv) * Math.PI / 180;
+  const vel = last.velocity || 643;
+  return projectBallisticArc(
+    (last.altitude_km || 14.88) * 1000,
+    vel * Math.cos(gamma_rad),
+    vel * Math.sin(gamma_rad),
+    last.downrange_km || 8.31
+  );
+}
 
 // ---------------------------------------------------------------
 // GLOBAL STATE
 // ---------------------------------------------------------------
 let nominalTraj = [];       // [{altitude_km, downrange_km, velocity, ...}]
+let nominalCoast = [];      // ballistic coast extension after core burnout
 let actualTraj  = [];       // accumulated from telemetry
 let latestState = {};       // latest telemetry snapshot
 let latestDirector = {};    // latest flight director output
@@ -479,7 +552,9 @@ socket.on('nominal', data => {
   const overlay = el('loading-overlay');
   if (overlay) overlay.style.display = 'none';
   nominalTraj = data.trajectory || [];
-  console.log('Nominal trajectory received:', nominalTraj.length, 'points');
+  nominalCoast = computeNominalCoast();
+  console.log('Nominal trajectory received:', nominalTraj.length, 'points,',
+              nominalCoast.length, 'coast points');
   renderAll();
 });
 
@@ -664,15 +739,31 @@ function drawGlobe() {
   if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
   const ctx = canvas.getContext('2d');
 
-  // --- Dynamic zoom: compute view extent from trajectory ---
+  // Compute ballistic projection from current velocity state
+  let projectionArc = [];
+  if (actualTraj.length > 0 && (latestState.altitude || 0) > 100) {
+    const v_h = latestState.v_horiz || 0;
+    const v_v = latestState.v_vert || 0;
+    const lastPt = actualTraj[actualTraj.length - 1];
+    if (Math.abs(v_h) > 0.1 || Math.abs(v_v) > 0.1) {
+      projectionArc = projectBallisticArc(
+        latestState.altitude, v_h, v_v, lastPt.downrange_km || 0
+      );
+    }
+  }
+
+  // --- Dynamic zoom: compute view extent from trajectory + projection ---
   const curAlt = (latestState.altitude || 0) / 1000;
   const curDR = actualTraj.length > 0 ? (actualTraj[actualTraj.length - 1].downrange_km || 0) : 0;
   let maxVisAlt = Math.max(curAlt, 0);
   let maxVisDR = Math.max(curDR, 0);
-  for (let i = 0; i < actualTraj.length; i++) {
-    const p = actualTraj[i];
-    if (p.altitude_km > maxVisAlt) maxVisAlt = p.altitude_km;
-    if (p.downrange_km > maxVisDR) maxVisDR = p.downrange_km;
+  const extentSources = [actualTraj, nominalCoast, projectionArc];
+  for (let s = 0; s < extentSources.length; s++) {
+    const src = extentSources[s];
+    for (let i = 0; i < src.length; i++) {
+      if (src[i].altitude_km > maxVisAlt) maxVisAlt = src[i].altitude_km;
+      if (src[i].downrange_km > maxVisDR) maxVisDR = src[i].downrange_km;
+    }
   }
 
   // Target view altitude: fit trajectory with headroom, minimum 12km
@@ -761,30 +852,21 @@ function drawGlobe() {
     ctx.setLineDash([]);
   }
 
+  // Nominal coast extension (lighter blue, after core burnout)
+  drawPath(nominalCoast, 'rgba(30,136,229,0.25)', [4, 6], 1.2);
+
   // Nominal trajectory (dashed blue)
   drawPath(nominalTraj, 'rgba(30,136,229,0.5)', [6, 5], 1.5);
 
-  // Abort projection: if periapsis is very negative, show where capsule lands
-  const pe_km = (latestState.periapsis || 0) / 1000;
-  if (pe_km < -50 && actualTraj.length > 0 && latestState.altitude > 0) {
-    // Simple abort arc: project from current position downward along a parabola
-    // Draw a curve back to the surface (rough: current alt → 0, at same downrange angle)
-    const last = actualTraj[actualTraj.length - 1];
-    const abortPts = [];
-    for (let i = 0; i <= 20; i++) {
-      const f = i / 20;
-      const alt = last.altitude_km * (1 - f * f);          // parabolic descent
-      const dr  = last.downrange_km + f * last.altitude_km * 0.3; // rough downrange
-      if (alt >= 0) abortPts.push({ altitude_km: alt, downrange_km: dr });
-    }
-    drawPath(abortPts, 'rgba(239,83,80,0.55)', [5, 4], 1.5);
-    // Landing zone marker
-    if (abortPts.length) {
-      const lp = abortPts[abortPts.length - 1];
-      const [lx, ly] = toXY(lp.downrange_km, lp.altitude_km);
-      ctx.beginPath(); ctx.arc(lx, ly, 5, 0, Math.PI*2);
-      ctx.fillStyle = 'rgba(239,83,80,0.4)'; ctx.fill();
-      ctx.strokeStyle = 'rgba(239,83,80,0.8)'; ctx.lineWidth = 1.5; ctx.stroke();
+  // Ballistic projection from current velocity state (amber)
+  drawPath(projectionArc, 'rgba(255,183,77,0.55)', [5, 4], 1.5);
+  if (projectionArc.length > 1) {
+    const ep = projectionArc[projectionArc.length - 1];
+    if (ep.altitude_km <= 0.05) {
+      const [ex, ey] = toXY(ep.downrange_km, ep.altitude_km);
+      ctx.beginPath(); ctx.arc(ex, ey, 4.5, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,183,77,0.35)'; ctx.fill();
+      ctx.strokeStyle = 'rgba(255,183,77,0.8)'; ctx.lineWidth = 1.5; ctx.stroke();
     }
   }
 
@@ -861,12 +943,25 @@ function drawTrajectoryPlot() {
   ctx.fillStyle = '#07090e';
   ctx.fillRect(0, 0, W, H);
 
+  // Compute ballistic projection for this frame
+  let trajProjPts = [];
+  if (actualTraj.length > 0 && (latestState.altitude || 0) > 100) {
+    const v_h = latestState.v_horiz || 0;
+    const v_v = latestState.v_vert || 0;
+    const lastA = actualTraj[actualTraj.length - 1];
+    if (Math.abs(v_h) > 0.1 || Math.abs(v_v) > 0.1) {
+      trajProjPts = projectBallisticArc(
+        latestState.altitude, v_h, v_v, lastA.downrange_km || 0
+      );
+    }
+  }
+
   const pad = { l: 46, r: 16, t: 32, b: 36 };
   const gw = W - pad.l - pad.r;
   const gh = H - pad.t - pad.b;
 
-  // Auto-range from data
-  const allPts = [...nominalTraj, ...actualTraj];
+  // Auto-range from data including projection and nominal coast
+  const allPts = [...nominalTraj, ...nominalCoast, ...actualTraj, ...trajProjPts];
   const maxDR  = Math.max(10, ...allPts.map(p => p.downrange_km || 0)) * 1.08;
   const maxAlt = Math.max(18, ...allPts.map(p => p.altitude_km  || 0)) * 1.08;
 
@@ -921,8 +1016,14 @@ function drawTrajectoryPlot() {
     ctx.stroke(); ctx.setLineDash([]);
   }
 
-  // Nominal
+  // Nominal coast extension (lighter, behind nominal powered)
+  drawTraj(nominalCoast, 'rgba(30,136,229,0.25)', [4, 6], 1.2);
+
+  // Nominal powered trajectory
   drawTraj(nominalTraj, 'rgba(30,136,229,0.5)', [6, 5], 1.5);
+
+  // Ballistic projection from current velocity (amber)
+  drawTraj(trajProjPts, 'rgba(255,183,77,0.55)', [5, 4], 1.5);
 
   // Actual
   drawTraj(actualTraj, '#43a047', [], 2);
