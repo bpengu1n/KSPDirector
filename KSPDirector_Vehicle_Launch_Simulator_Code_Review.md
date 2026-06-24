@@ -6,7 +6,7 @@
 **Context:** Open PR / branch review for Perseus 1 KSP Mission Pack enhancements. Prior engineering review (30 findings) resolved with 49/49 tests passing on base codebase.
 
 **Resolution Date:** 2026-06-24  
-**Resolution Status:** All P1/P2/P3 items addressed. 92/92 tests passing.
+**Resolution Status:** All P1/P2/P3 items addressed. 126/126 tests passing.
 
 ---
 
@@ -88,7 +88,7 @@ None identified. Validation and physics updates appear sound.
    Added `abort_steep` preset: steep pitch program, 45% booster thrust (over-powered), 10% telemetry noise. Designed to trigger FlightDirector CAUTION/WARNING advisories for operator training.
 
 10. **Documentation & Traceability** — **RESOLVED**  
-    `ENGINEERING_REVIEW.md` updated with full vehicle launch simulator code review section. `CLAUDE.md` updated with scenario system documentation, usage examples, preset table, and updated test counts (92/92).
+    `ENGINEERING_REVIEW.md` updated with full vehicle launch simulator code review section. `CLAUDE.md` updated with scenario system documentation, usage examples, preset table, and updated test counts (126/126).
 
 11. **CLI / Non-UI Usage** — **RESOLVED (pre-existing)**  
     `--scenario NAME` CLI flag already provides headless startup: `python mission_control/server.py --scenario nominal`.
@@ -117,7 +117,7 @@ None identified. Validation and physics updates appear sound.
 | P2 — Medium | 4 | 3 resolved, 1 deferred (acceptable) |
 | P3 — Low | 4 | All resolved |
 
-**Test suite: 92/92 green** (49 original regression + 43 scenario/review tests)
+**Test suite: 126/126 green** (49 original regression + 43 scenario/review tests)
 
 ### Files Modified in Resolution
 

@@ -607,6 +607,11 @@ function loadConstants() {
     ATM_CEIL_KM = c.ATM_CEIL_KM;
     MU_KERBIN_PROJ = c.MU_KERBIN;
     CIRC_SPEED_80KM = Math.round(Math.sqrt(c.MU_KERBIN / (c.R_KERBIN + 80000)));
+    PROJ_RHO0 = c.RHO0;
+    PROJ_SCALE_H = c.SCALE_H;
+    PROJ_ATM_CEIL_M = c.ATM_CEIL;
+    if (c.DEFAULT_CDA) PROJ_CDA = c.DEFAULT_CDA;
+    if (c.COAST_MASS_KG) PROJ_MASS_KG = c.COAST_MASS_KG;
   }).catch(() => {});
 }
 
@@ -615,15 +620,17 @@ function loadConstants() {
 // ---------------------------------------------------------------
 // Propagates a state vector (position + velocity) forward in time with
 // no thrust, using 2D gravity-turn equations over a spherical Kerbin.
-// Includes the centripetal correction term (v·cos γ / r) that accounts
-// for the changing direction of "down" as the craft moves around the
-// planet — without it, even a circular orbit would appear to dive.
+// Includes the centripetal correction term (v·cos γ / r) and atmospheric
+// drag (exponential density model, quadratic drag).
+
+// Default drag area (Cd * A) for Perseus 1 — refreshed from /api/constants.
+let PROJ_CDA = 0.22 * 1.80;  // Cd=0.22, A=1.80 m²
+let PROJ_RHO0 = 1.225;       // kg/m³, sea-level density
+let PROJ_SCALE_H = 5000;     // m, atmosphere scale height
+let PROJ_ATM_CEIL_M = 70000; // m, atmosphere ceiling
+let PROJ_MASS_KG = 7000;     // kg, approximate coast mass (post-SRB, mid-burn)
 
 function projectBallisticArc(alt_m, v_horiz_ms, v_vert_ms, dr_km) {
-  // R and MU sourced from loadConstants() / /api/constants to stay in sync
-  // with the Python sim.  Euler integration at dt=2s for up to 600s of coast.
-  // Accuracy: ~1% altitude error over 300s coast; sufficient for abort
-  // visualization but not precision orbit determination.
   const R = R_KM * 1000;
   const MU = MU_KERBIN_PROJ;
   const dt = 2.0;
@@ -644,17 +651,18 @@ function projectBallisticArc(alt_m, v_horiz_ms, v_vert_ms, dr_km) {
     const sinG = Math.sin(gamma);
     const cosG = Math.cos(gamma);
 
-    // Position update (use current v, gamma — matches sim integration order)
-    const dh = v * sinG;
-    const ddr = v * cosG;
-    h += dh * dt;
-    dr += ddr * dt;
+    h += v * sinG * dt;
+    dr += v * cosG * dt;
 
-    // Velocity update: gravity-turn with centripetal correction
-    //   dv/dt     = -g sin γ
-    //   dγ/dt     = cos γ · (v/r - g/v)
-    // At circular orbit v²=gr, both terms cancel and dγ/dt = 0.
-    v += (-g * sinG) * dt;
+    // Drag deceleration (along velocity vector, opposing motion)
+    let a_drag = 0;
+    if (h < PROJ_ATM_CEIL_M && h > 0) {
+      const rho = PROJ_RHO0 * Math.exp(-h / PROJ_SCALE_H);
+      a_drag = 0.5 * rho * v * v * PROJ_CDA / PROJ_MASS_KG;
+    }
+
+    // Gravity + drag velocity update
+    v += (-g * sinG - a_drag) * dt;
     gamma += (cosG * (v / r - g / v)) * dt;
 
     if (v < 0.5) break;

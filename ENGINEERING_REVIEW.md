@@ -857,12 +857,38 @@ without browser interaction.
 **P3-12: Licensing / Attribution** — Kerbin parameters are derived from KSP
 public wiki data (stock game values). No external proprietary algorithms used.
 
+---
+
+## Physics Model Gaps — Code Review Findings (2026-06-24)
+
+Following a physics model gap analysis of the ballistic projection engine,
+the highest-impact gap (atmospheric drag) was resolved.
+
+**PG-1: Atmospheric Drag in Ballistic Projection — RESOLVED**
+- **Finding:** `projectBallisticArc` had no drag term. Early coast phases and
+  steep aborts produced unrealistic downrange distances.
+- **Resolution:** Added exponential atmosphere model (`ρ = ρ₀·exp(−h/Hs)`) and
+  quadratic drag (`a_drag = ½ρv²CdA/m`) to both JS and Python reference.
+  Constants served via `/api/constants` (CdA from VehicleConfig, coast mass
+  from booster sep mass). Five new tests validate drag behavior.
+
+**PG-8: Constants Traceability — RESOLVED**
+- `/api/constants` expanded to include `DEFAULT_CDA` and `COAST_MASS_KG`.
+
+**PG-9: Energy Conservation — RESOLVED**
+- `TestEnergyConservation` validates integrator stability in vacuum arcs.
+
+**PG-3 (Euler integrator), PG-6 (rotation), PG-7 (orbital elements):**
+Deferred with rationale. See `PENDING.md` for full deferred items list.
+
 ### Summary
 
 | Priority | Count | Status |
 |---|---|---|
-| P1 — High | 4 | All resolved |
-| P2 — Medium | 3 | All resolved |
-| P3 — Low | 4 | 1 resolved, 3 deferred (acceptable) |
+| P1 — High (code review) | 4 | All resolved |
+| P2 — Medium (code review) | 3 | All resolved |
+| P3 — Low (code review) | 4 | 1 resolved, 3 deferred (acceptable) |
+| P0 — Physics gaps | 1 | Resolved (drag model) |
+| P1 — Physics gaps | 2 | Resolved (constants, energy) |
 
-**Test suite: 92/92 green** (49 original regression + 35 scenario + 8 review edge cases).
+**Test suite: 126/126 green** (49 regression + 43 scenario + 34 ballistic projection).

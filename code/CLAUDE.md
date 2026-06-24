@@ -130,7 +130,7 @@ If you change any part mass or engine stat, re-run and update this table.
 | Target orbit | 80 × 80 km | design |
 | Orbital speed @80km | 2,279 m/s | derived |
 | TMI ΔV | ~856 m/s | design |
-| Test suite | **92/92 green** | last run |
+| Test suite | **126/126 green** | last run |
 
 ---
 
@@ -368,11 +368,12 @@ tests/test_p2_p3_regressions.py 21 tests  — P2/P3 fixes validated
 ─────────────────────────────────────────────────────
 Total                           49 tests  ALL PASSING
 tests/test_scenario.py          43 tests  — scenario system validated
+tests/test_ballistic_projection.py 34 tests — ballistic projection + drag
 ─────────────────────────────────────────────────────
-Total                           92 tests  ALL PASSING
+Total                          126 tests  ALL PASSING
 ```
 
-**Before making any change**: run the full suite and confirm 92/92 green.
+**Before making any change**: run the full suite and confirm 126/126 green.
 **When adding a feature or fixing a bug**: write the test first (red), then fix (green).
 
 The engineering review describes _why_ each fix was made, not just what changed.
@@ -455,10 +456,11 @@ The module-level `__getattr__` provides backward-compatible reads.
 ### Test suite
 
 ```bash
-# Full suite: 92 tests (49 regression + 43 scenario)
+# Full suite: 126 tests (49 regression + 43 scenario + 34 ballistic)
 cd /home/user/KSPDirector/code
 python -m unittest tests.test_p0_regressions tests.test_p1_regressions \
-    tests.test_p2_p3_regressions tests.test_scenario -v
+    tests.test_p2_p3_regressions tests.test_scenario \
+    tests.test_ballistic_projection -v
 ```
 
 ---

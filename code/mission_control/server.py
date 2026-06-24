@@ -52,7 +52,8 @@ from flask_socketio import SocketIO, emit
 from mission_control.telemachus_client import TelematicusClient, SimulatedTelemetry, ScriptedTelemetry
 from mission_control.nominal_compare import NominalTrajectory, FlightDirector
 from mission_control.scenario import LaunchScenario, PRESET_SCENARIOS
-from sim.constants import R_KERBIN, MU_KERBIN, ATM_CEIL, RHO0, SCALE_H
+from sim.constants import R_KERBIN, MU_KERBIN, ATM_CEIL, RHO0, SCALE_H, PERSEUS_1_DEFAULT
+from sim.vehicle import VehicleConfig
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)-8s %(name)s — %(message)s")
@@ -144,6 +145,7 @@ def api_clear_trajectory():
 @app.route("/api/constants")
 def api_constants():
     """Serve Kerbin physics constants so the JS frontend stays in sync."""
+    default_cfg = VehicleConfig()
     return jsonify({
         "R_KERBIN": R_KERBIN,
         "MU_KERBIN": MU_KERBIN,
@@ -152,6 +154,8 @@ def api_constants():
         "SCALE_H": SCALE_H,
         "R_KM": R_KERBIN / 1000.0,
         "ATM_CEIL_KM": ATM_CEIL / 1000.0,
+        "DEFAULT_CDA": default_cfg.effective_cda,
+        "COAST_MASS_KG": default_cfg.mass_at_booster_sep * 1000.0,
     })
 
 
