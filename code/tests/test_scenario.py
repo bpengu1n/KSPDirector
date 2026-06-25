@@ -1260,7 +1260,7 @@ class TestTelematicusTopics(unittest.TestCase):
     def test_subscribed_topics_include_vessel_data(self):
         from mission_control.telemachus_client import SUBSCRIBED_TOPICS
         required = [
-            "v.altitude", "v.velocity", "v.verticalSpeed", "v.surfaceVelocity",
+            "v.altitude", "v.speed", "v.verticalSpeed", "v.surfaceSpeed",
             "v.mass", "v.geeForce", "v.mach", "v.dynamicPressurekPa",
             "v.atmosphericDensity", "v.lat", "v.long", "v.currentStage",
         ]

@@ -13,26 +13,35 @@ Telemachus WebSocket protocol:
     - Receive:    JSON object {"topic": value, ...} at the requested rate (ms)
     - Unsubscribe: send {"-": ["topic1"]}
 
-Common topic names (KSP 1, Telemachus 1.x):
+Common topic names (verified against TeaGuild/Telemachus-1 source):
     v.altitude            Altitude above sea level (m)
-    v.velocity            Total velocity (m/s)
+    v.speed               Total speed (m/s) — NOT v.velocity (doesn't exist)
     v.verticalSpeed       Vertical component of velocity (m/s)
-    v.surfaceVelocity     Horizontal surface velocity (m/s)
+    v.surfaceSpeed        Surface speed (m/s) — NOT v.surfaceVelocity
     o.ApA                 Apoapsis altitude (m)
     o.PeA                 Periapsis altitude (m)
     o.inclination         Orbital inclination (degrees)
     o.eccentricity        Orbital eccentricity
-    p.heading             Vehicle heading (degrees)
-    p.pitch               Vehicle pitch (-90 to +90, 0 = horizon)
-    p.roll                Vehicle roll (degrees)
+    n.heading             Vehicle heading (degrees) — NOT p.heading
+    n.pitch               Vehicle pitch (-90 to +90, 0 = horizon) — NOT p.pitch
+    n.roll                Vehicle roll (degrees) — NOT p.roll
     t.universalTime       Universe time (s)
-    t.missionTime         Mission elapsed time (s)
+    v.missionTime         Mission elapsed time (s) — NOT t.missionTime
     f.throttle            Current throttle (0.0 to 1.0)
     r.resource[LiquidFuel]  Liquid fuel remaining (units)
     r.resource[SolidFuel]   Solid fuel remaining (units)
+    r.resourceMax[Name]     Max resource capacity (units)
+    v.mass                Vessel mass (tonnes)
+    v.geeForce            G-force experienced
+    v.mach                Mach number
+    v.dynamicPressurekPa  Dynamic pressure (kPa)
     v.atmosphericDensity  Atmospheric density (kg/m³)
     v.lat                 Latitude (degrees)
     v.long                Longitude (degrees)
+    dv.stageCount         Number of stages with delta-V
+    dv.stageDVVac[n]      Per-stage delta-V vacuum (m/s)
+
+Full schema: see code/telemachus_schema.json
 
 NOTE: Topic names may vary by Telemachus version. Check your plugin's
 topic list at http://[ksp-host]:8085/telemachus/datalink if subscriptions
@@ -48,17 +57,17 @@ from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-# Topics to subscribe to (adjust if your Telemachus version uses different names)
+# Topics to subscribe to — verified against TeaGuild/Telemachus-1 source.
 # This is the base set; per-stage topics (dv.stageDVVac[0], etc.) are added
 # dynamically after dv.stageCount is known.
 SUBSCRIBED_TOPICS = [
     # Position / altitude
     "v.altitude",
     "v.heightFromTerrain",
-    # Velocity
-    "v.velocity",
+    # Velocity — NOTE: v.velocity does NOT exist in Telemachus-1;
+    # v.speed is total speed, v.surfaceSpeed is surface speed
     "v.verticalSpeed",
-    "v.surfaceVelocity",
+    "v.surfaceSpeed",
     "v.speed",
     # Orbital
     "o.ApA",
@@ -72,13 +81,15 @@ SUBSCRIBED_TOPICS = [
     "o.trueAnomaly",
     "o.lan",
     "o.argumentOfPeriapsis",
-    # Attitude
-    "p.heading",
-    "p.pitch",
-    "p.roll",
-    # Time
+    # Attitude — NOTE: p.heading/p.pitch/p.roll do NOT exist;
+    # Telemachus-1 uses n.heading/n.pitch/n.roll (navball frame)
+    "n.heading",
+    "n.pitch",
+    "n.roll",
+    # Time — NOTE: t.missionTime does NOT exist;
+    # Telemachus-1 uses v.missionTime
     "t.universalTime",
-    "t.missionTime",
+    "v.missionTime",
     # Flight control
     "f.throttle",
     # Vessel-wide resources
@@ -117,13 +128,15 @@ SUBSCRIBED_TOPICS = [
 ]
 
 # Human-readable field mapping: Telemachus topic -> internal key
+# Verified against TeaGuild/Telemachus-1 source (VesselDataHandlers.cs,
+# FlightControlHandlers.cs, ResourceHandlers.cs, DeltaVHandlers.cs,
+# SystemHandlers.cs).
 FIELD_MAP = {
-    "v.altitude":             "altitude",          # m
-    "v.heightFromTerrain":    "height_terrain",    # m
-    "v.velocity":             "velocity",          # m/s
+    "v.altitude":             "altitude",          # m ASL
+    "v.heightFromTerrain":    "height_terrain",    # m AGL
     "v.verticalSpeed":        "v_vert",            # m/s
-    "v.surfaceVelocity":      "v_horiz",           # m/s (approx)
-    "v.speed":                "speed",             # m/s orbital
+    "v.surfaceSpeed":         "v_horiz",           # m/s surface frame
+    "v.speed":                "velocity",          # m/s total (orbital frame)
     "o.ApA":                  "apoapsis",          # m
     "o.PeA":                  "periapsis",         # m
     "o.inclination":          "inclination",       # deg
@@ -135,11 +148,11 @@ FIELD_MAP = {
     "o.trueAnomaly":          "true_anomaly",      # deg
     "o.lan":                  "lan",               # deg
     "o.argumentOfPeriapsis":  "arg_pe",            # deg
-    "p.heading":              "heading",           # deg
-    "p.pitch":                "pitch",             # deg, +up/-down from horizon
-    "p.roll":                 "roll",              # deg
+    "n.heading":              "heading",           # deg (navball)
+    "n.pitch":                "pitch",             # deg, +up/-down from horizon
+    "n.roll":                 "roll",              # deg
     "t.universalTime":        "universal_time",    # s
-    "t.missionTime":          "mission_time",      # s (MET)
+    "v.missionTime":          "mission_time",      # s (MET)
     "f.throttle":             "throttle",          # 0-1
     "r.resource[LiquidFuel]": "liquid_fuel",
     "r.resource[SolidFuel]":  "solid_fuel",
@@ -632,6 +645,9 @@ class SimulatedTelemetry:
                 "v_horiz": v_h,
                 "apoapsis": apoapsis,
                 "periapsis": periapsis,
+                "inclination": 0.0,
+                "time_to_ap": max(0, 61 - elapsed) if not landed else None,
+                "time_to_pe": None,
                 "pitch": pitch,
                 "heading": 90.0,
                 "roll": random.uniform(-2, 2) if not landed else 0.0,
@@ -967,6 +983,7 @@ class ScriptedTelemetry:
 
             sim_stages = self._build_scripted_stages(p, elapsed, lf, sf, lf_total, sf_total)
 
+            total_sim_time = pts[-1].t if pts else 61
             state = {
                 "connected": True, "simulated": True, "scripted": True,
                 "altitude": alt,
@@ -975,6 +992,9 @@ class ScriptedTelemetry:
                 "v_horiz": v_h,
                 "apoapsis": apoapsis,
                 "periapsis": periapsis,
+                "inclination": 0.0,
+                "time_to_ap": max(0, total_sim_time - elapsed) if not landed else None,
+                "time_to_pe": None,
                 "pitch": pitch,
                 "heading": 90.0,
                 "roll": (random.uniform(-2, 2) if noise_pct > 0 else 0.0) if not landed else 0.0,
