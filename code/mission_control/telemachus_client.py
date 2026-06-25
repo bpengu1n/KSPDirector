@@ -458,7 +458,7 @@ class TelematicusClient:
                 "isp_asl": _get("ispasl"),
                 "isp_actual": _get("ispactual"),
                 "thrust_vac": _get("thrustvac"),
-                "thrust_asl": _get("thrustASL"),
+                "thrust_asl": _get("thrustasl"),
                 "thrust_actual": _get("thrustactual"),
                 "burn_time": _get("burntime"),
                 "mass": _get("mass"),
@@ -770,6 +770,8 @@ class ScriptedTelemetry:
     def start(self):
         if not self._points:
             return
+        if self._thread and self._thread.is_alive():
+            self.stop()
         self._stop_event.clear()
         with self._lock:
             self._playback_state = "playing"
@@ -930,15 +932,14 @@ class ScriptedTelemetry:
 
         while not self._stop_event.is_set():
             with self._lock:
-                if self._playback_state == "paused":
-                    time.sleep(self.rate_ms / 1000.0)
-                    continue
-
                 if self._playback_state != "playing":
-                    time.sleep(self.rate_ms / 1000.0)
-                    continue
+                    pass  # will sleep below, outside the lock
+                else:
+                    elapsed = self._get_sim_elapsed_locked()
 
-                elapsed = self._get_sim_elapsed_locked()
+            if self._playback_state != "playing":
+                time.sleep(self.rate_ms / 1000.0)
+                continue
 
             while pt_idx + 1 < len(pts) and pts[pt_idx + 1].t <= elapsed:
                 pt_idx += 1
@@ -976,7 +977,7 @@ class ScriptedTelemetry:
             cfg = self._vehicle_cfg
             srb_burn_time = cfg.srb_burn_time_s if cfg else 25.3
             lf_total = 360.0
-            sf_total = 160.0 if (cfg and cfg.n_boosters > 0) else 0
+            sf_total = (cfg.booster_set_prop / 0.0075) if (cfg and cfg.n_boosters > 0) else 0
 
             lf = self._compute_liquid_fuel_from_mass(p.mass, p.phase)
             sf = max(0, sf_total - elapsed * (sf_total / srb_burn_time)) if elapsed < srb_burn_time else 0

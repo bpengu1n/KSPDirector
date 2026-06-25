@@ -367,13 +367,13 @@ tests/test_p1_regressions.py    11 tests  — P1 high-priority fixes validated
 tests/test_p2_p3_regressions.py 21 tests  — P2/P3 fixes validated
 ─────────────────────────────────────────────────────
 Total                           49 tests  ALL PASSING
-tests/test_scenario.py          97 tests  — scenario system + UI viewport + layout + graphical elements + timeline bands + fuel model + phase detection
+tests/test_scenario.py         123 tests  — scenario system + UI viewport + layout + graphical elements + timeline bands + fuel model + phase detection + Telemachus topics + stages
 tests/test_ballistic_projection.py 34 tests — ballistic projection + drag
 ─────────────────────────────────────────────────────
-Total                          180 tests  ALL PASSING
+Total                          206 tests  ALL PASSING
 ```
 
-**Before making any change**: run the full suite and confirm 180/180 green.
+**Before making any change**: run the full suite and confirm 206/206 green.
 **When adding a feature or fixing a bug**: write the test first (red), then fix (green).
 
 The engineering review describes _why_ each fix was made, not just what changed.
@@ -405,7 +405,7 @@ LaunchScenario (scenario.py) → VehicleConfig + pitch program
 - `mission_control/telemachus_client.py` — `ScriptedTelemetry` class (appended)
 - `mission_control/server.py` — `/api/scenario/*` routes + `MissionSession`
 - `mission_control/static/index.html` — scenario control panel + `/api/constants`
-- `tests/test_scenario.py` — 97 tests covering model, playback, API, integration, UI viewport, layout, graphical elements, timeline bands, phase detection, fuel model
+- `tests/test_scenario.py` — 123 tests covering model, playback, API, integration, UI viewport, layout, graphical elements, timeline bands, phase detection, fuel model, Telemachus topics, stages
 
 ### Usage
 
@@ -456,12 +456,103 @@ The module-level `__getattr__` provides backward-compatible reads.
 ### Test suite
 
 ```bash
-# Full suite: 180 tests (49 regression + 97 scenario + 34 ballistic)
+# Full suite: 206 tests (49 regression + 123 scenario + 34 ballistic)
 cd /home/user/KSPDirector/code
 python -m unittest tests.test_p0_regressions tests.test_p1_regressions \
     tests.test_p2_p3_regressions tests.test_scenario \
     tests.test_ballistic_projection -v
 ```
+
+---
+
+## PENDING — identified by expert review, not yet resolved
+
+Items below were flagged during a structured review (senior SWE, tester, flight
+controller) and deferred as non-critical. Fix when touching the relevant code.
+
+**P-INPUT-01: `LaunchScenario.validate()` TypeError on non-numeric inputs**
+`from_dict()` does no type coercion. If a caller passes `{"n_boosters": "foo"}`,
+`validate()` raises TypeError instead of returning errors. Low risk since
+Flask's JSON parser handles types, but programmatic callers could hit this.
+File: `scenario.py`, `validate()` + `from_dict()`.
+
+**P-XSS-01: innerHTML with server-controlled data in index.html**
+Multiple `innerHTML` assignments interpolate server data (gate phases, stage
+labels, scenario summaries) without HTML escaping. Data is currently from
+trusted Python code, but adding an `escapeHtml()` helper would harden against
+future changes. Files: `index.html` lines ~985, ~1040, ~1645.
+
+**P-TEST-01: No boundary tests for v_vert < 50 CIRCULARIZE guard**
+`detect_phase()` uses `abs(v_vert) < 50` to gate CIRCULARIZE. Tests cover
+v_vert=211 and v_vert=3 but not the boundary (49 vs 51). File: `nominal_compare.py:211`.
+
+**P-TEST-02: No tests for `--scenario` CLI flag**
+Both `ascent_sim.py` and `server.py` accept `--scenario` but no test covers the
+CLI bootstrap path (error on unknown name, override behavior, JSON output mode).
+
+**P-TEST-03: API error paths untested**
+`/api/scenario/start|pause|resume|reset|speed` return 400 when no
+ScriptedTelemetry is loaded — untested. Also: `/api/scenario/speed` with
+out-of-range values, `/api/scenario/load` with unknown preset or missing body.
+
+**P-TEST-04: time.sleep-based tests are flaky under CI load**
+27 `time.sleep()` calls in `test_scenario.py`. Replace with a polling helper
+`wait_for_condition(pred, timeout)` for CI robustness.
+
+**P-FUEL-01: Stage dV bar fill uses mass fraction, not fuel depletion %**
+`index.html` line ~1008: `fuelPct = fuelMass / totalMass * 100`. This starts at
+~57%, not 100%. Track initial fuel mass per stage and compute relative depletion.
+
+**P-FUEL-02: Preset scenario `noise_pct` override silently ignored**
+`api_scenario_load()` loads presets directly without applying the `noise_pct`
+field from the request body. The UI noise slider has no effect for presets.
+
+**P-TELEM-01: `time_to_ap` approximation misleading in offline modes**
+SimulatedTelemetry uses `max(0, 61-elapsed)`, ScriptedTelemetry uses
+`max(0, total_sim_time-elapsed)`. Both show 0s during Terrier burn when actual
+time-to-apoapsis could be 200+ seconds. Not used by flight director logic.
+
+**P-TELEM-02: SimulatedTelemetry g_force formula is physically meaningless**
+`velocity/time * 0.1` has no physical basis. ScriptedTelemetry always returns
+1.0. Neither is used by the flight director. Fix when g-force display matters.
+
+**P-TELEM-03: `v.surfaceSpeed` mapped to `v_horiz` is a semantic mismatch**
+`v.surfaceSpeed` is total surface-relative speed (includes vertical component),
+not horizontal speed. Pre-existing condition, but the topic rename is a good
+time to document the known inaccuracy.
+
+**P-TELEM-04: Missing `latitude`/`longitude` in offline telemetry states**
+SimulatedTelemetry and ScriptedTelemetry don't emit `latitude`/`longitude`.
+The UI doesn't display them, but code reading these fields gets None from
+offline sources vs actual values from live.
+
+**P-TELEM-05: Periapsis has no noise applied in offline modes**
+Apoapsis gets `noise()`, periapsis doesn't. Inconsequential during ascent
+(periapsis is deeply negative) but creates asymmetric telemetry signature.
+
+**P-MEM-01: Unbounded trajectory list growth in TelematicusClient**
+`_trajectory` grows indefinitely (~7,200 pts/hour). `get_trajectory()` copies
+the entire list. Cap to ~10,000 points with FIFO eviction for long sessions.
+
+**P-THREAD-01: `_launch_lon` accessed under two different locks**
+In `TelematicusClient._handle_message`, `_launch_lon` is read/written under
+`_lock` but reset under `_trajectory_lock`. Safe because single-threaded, but
+fragile if refactored.
+
+**P-SOCK-01: `cors_allowed_origins="*"` in production**
+SocketIO allows all origins. Fine for local dev; tighten if network-exposed.
+
+**P-TEST-05: No integration test for full Socket.IO broadcast pipeline**
+`TestScriptedDirectorIntegration` manually calls `fd.update()` rather than
+exercising the broadcast loop. No end-to-end Socket.IO test exists.
+
+**P-TEST-06: HTML/JS tests are regex-based and brittle**
+UI tests validate HTML/JS via regex. Will break on whitespace changes or
+minification. Acceptable without a headless browser but inherently fragile.
+
+**P-UI-01: Nominal comparison PITCH(V) delta color issue near zero**
+When nominal pitch-from-vertical ≈ 0, threshold `nom*0.1 = 0` causes even
+tiny deltas to show red. Cosmetic false alarm during first few seconds.
 
 ---
 
