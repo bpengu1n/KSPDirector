@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-06-25
+
 ### Added
 - **Scriptable Vehicle Launch Simulator**: `LaunchScenario` data model with 6 presets (nominal, steep_ascent, shallow_ascent, heavy_payload, thumper_variant, high_twr) and custom parameter support. `ScriptedTelemetry` playback engine with play/pause/reset/speed controls.
 - **Full Terrier upper stage modeling**: Trajectory integrator now runs the complete ascent through orbit insertion (BOOST -> CORE -> TERRIER -> COAST_APO -> CIRCULARIZE -> ORBIT). Achieves 80x75 km orbit with 1500 m/s remaining dV.
