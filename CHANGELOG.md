@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.1.1] — 2026-06-25
+
 ### Fixed
 - **Input validation hardening** (P-INPUT-01): `LaunchScenario.from_dict()` now coerces field types before construction; `validate()` catches `TypeError` on non-numeric inputs instead of crashing.
 - **XSS prevention** (P-XSS-01): Added `esc()` helper to web UI; all `innerHTML` interpolations of user-controlled data (gate phases, stage labels, scenario summaries) are now escaped.
