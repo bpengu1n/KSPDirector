@@ -75,17 +75,19 @@ html,body{width:100%;height:100%;background:var(--mc-bg);color:var(--mc-text);
   grid-row:2;grid-column:2;
   background:var(--mc-bg);
   display:grid;grid-template-rows:1fr 1fr;gap:1px;
+  min-height:0;
 }
 
 /* Right: director */
 #right-panel{
   grid-row:2;grid-column:3;
   background:var(--mc-panel);display:flex;flex-direction:column;gap:1px;
+  min-height:0;overflow:hidden;
 }
 
 /* Bottom timeline bar */
 #timeline-bar{
-  grid-column:1/-1;
+  grid-row:3;grid-column:1/-1;
   background:var(--mc-panel);border-top:1px solid var(--mc-border);
   display:flex;align-items:center;padding:0 12px;gap:8px;
 }
@@ -194,10 +196,29 @@ html,body{width:100%;height:100%;background:var(--mc-bg);color:var(--mc-text);
 .fuel-bar-bg{height:5px;background:rgba(255,255,255,0.08);border-radius:2px;overflow:hidden}
 .fuel-bar-fill{height:100%;border-radius:2px;transition:width 0.5s;background:var(--mc-teal-bright)}
 
+/* Stage dV bars */
+.stage-dv-entry{margin-bottom:8px;transition:opacity 0.3s}
+.stage-dv-entry.depleted{opacity:0.35}
+.stage-dv-entry.pending{opacity:0.6}
+.stage-dv-entry.active{opacity:1}
+.stage-dv-header{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:2px}
+.stage-dv-label{font-size:8.5px;letter-spacing:0.5px;color:var(--mc-text-dim)}
+.stage-dv-status{font-size:7px;letter-spacing:0.5px;text-transform:uppercase;margin-left:4px}
+.stage-dv-status.active{color:#4fc3f7}
+.stage-dv-status.pending{color:var(--mc-text-dim)}
+.stage-dv-status.depleted{color:rgba(255,255,255,0.25)}
+.stage-dv-value{font-size:11px;font-weight:700;color:var(--mc-text-bright);letter-spacing:0.5px}
+.stage-dv-bar-bg{height:6px;background:rgba(255,255,255,0.08);border-radius:3px;overflow:hidden}
+.stage-dv-bar-fill{height:100%;border-radius:3px;transition:width 0.5s}
+.stage-dv-sub{font-size:8px;color:var(--mc-text-dim);margin-top:1px;display:flex;justify-content:space-between}
+.stage-dv-offnominal{color:#ff9800;font-size:7px;margin-top:1px;display:none}
+.stage-dv-entry.offnominal .stage-dv-offnominal{display:block}
+.stage-dv-entry.offnominal .stage-dv-bar-fill{background:#ff9800 !important}
+
 /* ==========================================================================
    CANVAS PANELS (center)
    ========================================================================== */
-.canvas-panel{position:relative;background:var(--mc-bg)}
+.canvas-panel{position:relative;background:var(--mc-bg);overflow:hidden}
 .canvas-panel canvas{width:100%;height:100%;display:block}
 .canvas-label{
   position:absolute;top:8px;left:10px;font-size:8px;letter-spacing:1.5px;
@@ -359,6 +380,14 @@ html,body{width:100%;height:100%;background:var(--mc-bg);color:var(--mc-text);
         <span class="telem-label">INCLINATION</span>
         <span><span class="telem-value" id="t-inc">—</span><span class="telem-unit">°</span></span>
       </div>
+      <div class="telem-row">
+        <span class="telem-label">TIME TO AP</span>
+        <span><span class="telem-value" id="t-tta">—</span><span class="telem-unit">s</span></span>
+      </div>
+      <div class="telem-row">
+        <span class="telem-label">TIME TO PE</span>
+        <span><span class="telem-value" id="t-ttp">—</span><span class="telem-unit">s</span></span>
+      </div>
     </div>
 
     <div class="telem-section">
@@ -396,6 +425,31 @@ html,body{width:100%;height:100%;background:var(--mc-bg);color:var(--mc-text);
       </div>
       <div class="fuel-bar-wrap">
         <div class="fuel-bar-bg"><div class="fuel-bar-fill" id="sf-bar" style="width:0%;background:var(--mc-violet-bright)"></div></div>
+      </div>
+    </div>
+
+    <div class="telem-section" id="stage-dv-section" style="display:none">
+      <div class="telem-section-title">Stage ΔV</div>
+      <div id="stage-dv-bars"></div>
+    </div>
+
+    <div class="telem-section" id="vessel-section" style="display:none">
+      <div class="telem-section-title">Vessel</div>
+      <div class="telem-row">
+        <span class="telem-label">MASS</span>
+        <span><span class="telem-value" id="t-mass">—</span><span class="telem-unit">t</span></span>
+      </div>
+      <div class="telem-row">
+        <span class="telem-label">G-FORCE</span>
+        <span><span class="telem-value" id="t-gforce">—</span><span class="telem-unit">g</span></span>
+      </div>
+      <div class="telem-row">
+        <span class="telem-label">MACH</span>
+        <span><span class="telem-value" id="t-mach">—</span></span>
+      </div>
+      <div class="telem-row">
+        <span class="telem-label">DYN PRESS</span>
+        <span><span class="telem-value" id="t-dynp">—</span><span class="telem-unit">kPa</span></span>
       </div>
     </div>
 
@@ -583,7 +637,7 @@ html,body{width:100%;height:100%;background:var(--mc-bg);color:var(--mc-text);
 // on every animation frame tick. Invalidated on window resize.
 const _canvasSizes = {};
 function getCanvasSize(id) {
-  if (!_canvasSizes[id]) {
+  if (!_canvasSizes[id] || _canvasSizes[id].w < 50 || _canvasSizes[id].h < 50) {
     const canvas = el(id);
     if (!canvas) return {w: 800, h: 400};
     const rect = canvas.parentElement.getBoundingClientRect();
@@ -681,7 +735,8 @@ function projectBallisticArc(alt_m, v_horiz_ms, v_vert_ms, dr_km) {
 
 function computeNominalCoast() {
   if (!nominalTraj || nominalTraj.length < 2) return [];
-  const last = nominalTraj[nominalTraj.length - 1];
+  const corePts = nominalTraj.filter(p => p.phase === 'BOOST' || p.phase === 'CORE');
+  const last = corePts.length > 0 ? corePts[corePts.length - 1] : nominalTraj[nominalTraj.length - 1];
   const pfv = last.pitch_from_vertical || 50;
   const gamma_rad = (90 - pfv) * Math.PI / 180;
   const vel = last.velocity || 643;
@@ -693,11 +748,57 @@ function computeNominalCoast() {
   );
 }
 
+const PHASE_COLORS = {
+  'BOOST':        'rgba(171,71,188,0.35)',
+  'CORE':         'rgba(30,136,229,0.25)',
+  'TERRIER':      'rgba(0,131,143,0.20)',
+  'COAST_APO':    'rgba(255,255,255,0.06)',
+  'COAST':        'rgba(255,255,255,0.06)',
+  'CIRCULARIZE':  'rgba(38,166,154,0.20)',
+  'ORBIT':        'rgba(102,187,106,0.12)',
+};
+const PHASE_LABELS = {
+  'BOOST': 'BOOST', 'CORE': 'CORE', 'TERRIER': 'TERRIER',
+  'COAST_APO': 'COAST', 'COAST': 'COAST',
+  'CIRCULARIZE': 'CIRC', 'ORBIT': 'ORBIT',
+};
+
+function buildPhaseBands(traj) {
+  if (!traj || traj.length < 2) return [];
+  const bands = [];
+  let curPhase = traj[0].phase;
+  let startT = traj[0].t_s != null ? traj[0].t_s : traj[0].t;
+  for (let i = 1; i < traj.length; i++) {
+    const pt = traj[i];
+    const t = pt.t_s != null ? pt.t_s : pt.t;
+    if (pt.phase !== curPhase) {
+      bands.push({
+        label: PHASE_LABELS[curPhase] || curPhase,
+        start: startT,
+        end: t,
+        color: PHASE_COLORS[curPhase] || 'rgba(255,255,255,0.06)',
+      });
+      curPhase = pt.phase;
+      startT = t;
+    }
+  }
+  const lastPt = traj[traj.length - 1];
+  bands.push({
+    label: PHASE_LABELS[curPhase] || curPhase,
+    start: startT,
+    end: lastPt.t_s != null ? lastPt.t_s : lastPt.t,
+    color: PHASE_COLORS[curPhase] || 'rgba(255,255,255,0.06)',
+  });
+  return bands;
+}
+
 // ---------------------------------------------------------------
 // GLOBAL STATE
 // ---------------------------------------------------------------
-let nominalTraj = [];       // [{altitude_km, downrange_km, velocity, ...}]
+let nominalTraj = [];       // [{altitude_km, downrange_km, velocity, ...}] — full trajectory including orbital phases
+let nominalAscent = [];     // core stage portion only (BOOST + CORE) — for detailed display/auto-range
 let nominalCoast = [];      // ballistic coast extension after core burnout
+let phaseBands = [];        // timeline phase bands derived from nominalTraj
 let actualTraj  = [];       // accumulated from telemetry
 let latestState = {};       // latest telemetry snapshot
 let latestDirector = {};    // latest flight director output
@@ -726,9 +827,11 @@ socket.on('nominal', data => {
   const overlay = el('loading-overlay');
   if (overlay) overlay.style.display = 'none';
   nominalTraj = data.trajectory || [];
+  nominalAscent = nominalTraj.filter(p => p.phase === 'BOOST' || p.phase === 'CORE');
   nominalCoast = computeNominalCoast();
+  phaseBands = buildPhaseBands(nominalTraj);
   console.log('Nominal trajectory received:', nominalTraj.length, 'points,',
-              nominalCoast.length, 'coast points');
+              nominalAscent.length, 'ascent,', nominalCoast.length, 'coast points');
   renderAll();
 });
 
@@ -828,6 +931,8 @@ function updateTelemetryPanel() {
   setVal('t-apo', apo_km.toFixed(1), colorClass(apo_km, 70, 30));
   setVal('t-pe',  pe_km.toFixed(0),  pe_km > 70 ? 'good' : pe_km > -100 ? '' : 'bad');
   setVal('t-inc', fmtNum(s.inclination, 1), '');
+  setVal('t-tta', s.time_to_ap != null ? fmtNum(s.time_to_ap, 0) : '—', '');
+  setVal('t-ttp', s.time_to_pe != null ? fmtNum(s.time_to_pe, 0) : '—', '');
 
   // Attitude (KSP pitch: +90=up, 0=horizontal, -90=down)
   setVal('t-pitch', fmtNum(s.pitch, 1), '');
@@ -839,14 +944,104 @@ function updateTelemetryPanel() {
   setVal('t-thr', thr, '');
   const lf = s.liquid_fuel || 0;
   const sf = s.solid_fuel || 0;
-  const lfMax = 360, sfMax = 160;
+  const lfMax = s.liquid_fuel_max || 360;
+  const sfMax = s.solid_fuel_max || 160;
   setVal('t-lf', lf.toFixed(0), colorClass(lf, lfMax*0.5, lfMax*0.2));
   setVal('t-sf', sf.toFixed(0), '');
   el('lf-bar').style.width = Math.max(0, Math.min(100, lf/lfMax*100)) + '%';
   el('sf-bar').style.width = Math.max(0, Math.min(100, sf/sfMax*100)) + '%';
 
+  // Vessel info
+  if (s.mass != null) {
+    el('vessel-section').style.display = '';
+    setVal('t-mass', fmtNum(s.mass, 2), '');
+    setVal('t-gforce', fmtNum(s.g_force, 2), '');
+    setVal('t-mach', fmtNum(s.mach, 2), '');
+    setVal('t-dynp', fmtNum(s.dynamic_pressure, 2), '');
+  }
+
+  // Stage dV bars
+  updateStageDVBars(s.stages || []);
+
   // Environment
   setVal('t-atm', fmtNum(s.atm_density, 4), '');
+}
+
+// ---------------------------------------------------------------
+// STAGE DV BARS
+// ---------------------------------------------------------------
+const STAGE_COLORS = [
+  'var(--mc-violet-bright)',
+  'var(--mc-accent)',
+  'var(--mc-teal-bright)',
+  'var(--mc-green-bright)',
+  'var(--mc-yellow-bright)',
+  '#e0e0e0',
+];
+
+let _lastStageCount = -1;
+
+function updateStageDVBars(stages) {
+  const section = el('stage-dv-section');
+  const container = el('stage-dv-bars');
+  if (!stages || stages.length === 0) {
+    section.style.display = 'none';
+    return;
+  }
+  section.style.display = '';
+
+  if (stages.length !== _lastStageCount) {
+    _lastStageCount = stages.length;
+    container.innerHTML = stages.map((stg, i) => {
+      const color = STAGE_COLORS[i % STAGE_COLORS.length];
+      const label = stg.label || ('Stage ' + stg.index);
+      return `<div class="stage-dv-entry" id="stage-dv-${i}">
+        <div class="stage-dv-header">
+          <span class="stage-dv-label">${label}<span class="stage-dv-status" id="stage-dv-status-${i}"></span></span>
+          <span class="stage-dv-value" id="stage-dv-val-${i}">—</span>
+        </div>
+        <div class="stage-dv-bar-bg">
+          <div class="stage-dv-bar-fill" id="stage-dv-fill-${i}" style="width:0%;background:${color}"></div>
+        </div>
+        <div class="stage-dv-sub">
+          <span id="stage-dv-fuel-${i}">—</span>
+          <span id="stage-dv-burn-${i}">—</span>
+        </div>
+        <div class="stage-dv-offnominal" id="stage-dv-offnom-${i}"></div>
+      </div>`;
+    }).join('');
+  }
+
+  stages.forEach((stg, i) => {
+    const dvVac = stg.dv_vac || 0;
+    const dvInitial = stg.dv_initial || 1;
+    const dvPct = dvInitial > 0 ? (dvVac / dvInitial) * 100 : 0;
+    const burnTime = stg.burn_time || 0;
+    const status = stg.status || 'active';
+
+    const offnominal = stg.offnominal || false;
+    const entryEl = el('stage-dv-' + i);
+    if (entryEl) {
+      entryEl.className = 'stage-dv-entry ' + status + (offnominal ? ' offnominal' : '');
+    }
+    const offnomEl = el('stage-dv-offnom-' + i);
+    if (offnomEl) {
+      offnomEl.textContent = offnominal ? (stg.offnominal_reason || 'OFF-NOMINAL') : '';
+    }
+    const statusEl = el('stage-dv-status-' + i);
+    if (statusEl) {
+      statusEl.textContent = ' ' + status.toUpperCase();
+      statusEl.className = 'stage-dv-status ' + status;
+    }
+    const valEl = el('stage-dv-val-' + i);
+    if (valEl) valEl.textContent = dvVac.toFixed(0) + ' / ' + dvInitial.toFixed(0) + ' m/s';
+    const fillEl = el('stage-dv-fill-' + i);
+    if (fillEl) fillEl.style.width = Math.max(0, Math.min(100, dvPct)) + '%';
+    const fuelEl = el('stage-dv-fuel-' + i);
+    if (fuelEl) fuelEl.textContent = (stg.fuel_mass || 0).toFixed(2) + ' t fuel';
+    const burnEl = el('stage-dv-burn-' + i);
+    if (burnEl) burnEl.textContent = burnTime.toFixed(0) + 's burn';
+  });
 }
 
 // ---------------------------------------------------------------
@@ -965,11 +1160,15 @@ function drawGlobe() {
   ctx.fillStyle = '#050810';
   ctx.fillRect(0, 0, W, H);
 
-  // Stars (deterministic)
+  // Stars (deterministic pseudo-random via sine hash)
   ctx.fillStyle = 'rgba(200,215,255,0.5)';
+  function starHash(seed) {
+    var x = Math.sin(seed * 127.1 + 311.7) * 43758.5453;
+    return x - Math.floor(x);
+  }
   for (let i = 0; i < 120; i++) {
-    const sx = ((i * 137 + 31) % W);
-    const sy = ((i * 97 + 53) % H);
+    const sx = starHash(i * 2) * W;
+    const sy = starHash(i * 2 + 1) * H;
     const sr = (i % 3 === 0) ? 1.2 : 0.7;
     ctx.beginPath(); ctx.arc(sx, sy, sr, 0, Math.PI*2); ctx.fill();
   }
@@ -1029,8 +1228,8 @@ function drawGlobe() {
   // Nominal coast extension (lighter blue, after core burnout)
   drawPath(nominalCoast, 'rgba(30,136,229,0.25)', [4, 6], 1.2);
 
-  // Nominal trajectory (dashed blue)
-  drawPath(nominalTraj, 'rgba(30,136,229,0.5)', [6, 5], 1.5);
+  // Nominal trajectory (dashed blue, core ascent only — keeps globe focused)
+  drawPath(nominalAscent, 'rgba(30,136,229,0.5)', [6, 5], 1.5);
 
   // Ballistic projection from current velocity state (amber)
   drawPath(projectionArc, 'rgba(255,183,77,0.55)', [5, 4], 1.5);
@@ -1135,7 +1334,7 @@ function drawTrajectoryPlot() {
   const gh = H - pad.t - pad.b;
 
   // Auto-range from data including projection and nominal coast
-  const allPts = [...nominalTraj, ...nominalCoast, ...actualTraj, ...trajProjPts];
+  const allPts = [...nominalAscent, ...nominalCoast, ...actualTraj, ...trajProjPts];
   const maxDR  = Math.max(10, ...allPts.map(p => p.downrange_km || 0)) * 1.08;
   const maxAlt = Math.max(18, ...allPts.map(p => p.altitude_km  || 0)) * 1.08;
 
@@ -1193,8 +1392,8 @@ function drawTrajectoryPlot() {
   // Nominal coast extension (lighter, behind nominal powered)
   drawTraj(nominalCoast, 'rgba(30,136,229,0.25)', [4, 6], 1.2);
 
-  // Nominal powered trajectory
-  drawTraj(nominalTraj, 'rgba(30,136,229,0.5)', [6, 5], 1.5);
+  // Nominal powered trajectory (core ascent only — keeps plot focused)
+  drawTraj(nominalAscent, 'rgba(30,136,229,0.5)', [6, 5], 1.5);
 
   // Ballistic projection from current velocity (amber)
   drawTraj(trajProjPts, 'rgba(255,183,77,0.55)', [5, 4], 1.5);
@@ -1246,13 +1445,16 @@ function drawTimeline() {
 
   // P3-08: Telemachus mission_time is authoritative; wall-clock is fallback only
   const met = latestState.mission_time || 0;
-  const TOTAL = 70; // s — total powered-flight window shown
+  const TOTAL = 500; // s — total mission window (orbit insertion at ~T+480s)
 
-  // Phase bands
-  const bands = [
+  // Phase bands — derived from nominalTraj via buildPhaseBands()
+  const bands = phaseBands.length > 0 ? phaseBands : [
     { label: 'BOOST', start: 0, end: 25.3, color: 'rgba(171,71,188,0.35)' },
     { label: 'CORE',  start: 25.3, end: 63, color: 'rgba(30,136,229,0.25)' },
-    { label: 'TERRIER', start: 63, end: TOTAL, color: 'rgba(0,131,143,0.20)' },
+    { label: 'TERRIER', start: 63, end: 217, color: 'rgba(0,131,143,0.20)' },
+    { label: 'COAST', start: 217, end: 472, color: 'rgba(255,255,255,0.06)' },
+    { label: 'CIRC', start: 472, end: 480, color: 'rgba(38,166,154,0.20)' },
+    { label: 'ORBIT', start: 480, end: TOTAL, color: 'rgba(102,187,106,0.12)' },
   ];
 
   bands.forEach(b => {
@@ -1277,6 +1479,8 @@ function drawTimeline() {
     { t: 25.3, label: 'SEP', color: '#ab47bc' },
     { t: 30, label: 'MAXQ', color: '#ef5350' },
     { t: 63, label: 'B/O', color: '#ef5350' },
+    { t: 63, label: 'TERR', color: '#26a69a' },
+    { t: 480, label: 'ORBIT', color: '#66bb6a' },
   ];
   events.forEach(e => {
     const ex = (e.t / TOTAL) * W;

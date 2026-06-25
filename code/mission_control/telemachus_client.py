@@ -13,26 +13,35 @@ Telemachus WebSocket protocol:
     - Receive:    JSON object {"topic": value, ...} at the requested rate (ms)
     - Unsubscribe: send {"-": ["topic1"]}
 
-Common topic names (KSP 1, Telemachus 1.x):
+Common topic names (verified against TeaGuild/Telemachus-1 source):
     v.altitude            Altitude above sea level (m)
-    v.velocity            Total velocity (m/s)
+    v.speed               Total speed (m/s) — NOT v.velocity (doesn't exist)
     v.verticalSpeed       Vertical component of velocity (m/s)
-    v.surfaceVelocity     Horizontal surface velocity (m/s)
+    v.surfaceSpeed        Surface speed (m/s) — NOT v.surfaceVelocity
     o.ApA                 Apoapsis altitude (m)
     o.PeA                 Periapsis altitude (m)
     o.inclination         Orbital inclination (degrees)
     o.eccentricity        Orbital eccentricity
-    p.heading             Vehicle heading (degrees)
-    p.pitch               Vehicle pitch (-90 to +90, 0 = horizon)
-    p.roll                Vehicle roll (degrees)
+    n.heading             Vehicle heading (degrees) — NOT p.heading
+    n.pitch               Vehicle pitch (-90 to +90, 0 = horizon) — NOT p.pitch
+    n.roll                Vehicle roll (degrees) — NOT p.roll
     t.universalTime       Universe time (s)
-    t.missionTime         Mission elapsed time (s)
+    v.missionTime         Mission elapsed time (s) — NOT t.missionTime
     f.throttle            Current throttle (0.0 to 1.0)
     r.resource[LiquidFuel]  Liquid fuel remaining (units)
     r.resource[SolidFuel]   Solid fuel remaining (units)
+    r.resourceMax[Name]     Max resource capacity (units)
+    v.mass                Vessel mass (tonnes)
+    v.geeForce            G-force experienced
+    v.mach                Mach number
+    v.dynamicPressurekPa  Dynamic pressure (kPa)
     v.atmosphericDensity  Atmospheric density (kg/m³)
     v.lat                 Latitude (degrees)
     v.long                Longitude (degrees)
+    dv.stageCount         Number of stages with delta-V
+    dv.stageDVVac[n]      Per-stage delta-V vacuum (m/s)
+
+Full schema: see code/telemachus_schema.json
 
 NOTE: Topic names may vary by Telemachus version. Check your plugin's
 topic list at http://[ksp-host]:8085/telemachus/datalink if subscriptions
@@ -48,51 +57,143 @@ from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-# Topics to subscribe to (adjust if your Telemachus version uses different names)
+# Topics to subscribe to — verified against TeaGuild/Telemachus-1 source.
+# This is the base set; per-stage topics (dv.stageDVVac[0], etc.) are added
+# dynamically after dv.stageCount is known.
 SUBSCRIBED_TOPICS = [
+    # Position / altitude
     "v.altitude",
-    "v.velocity",
+    "v.heightFromTerrain",
+    # Velocity — NOTE: v.velocity does NOT exist in Telemachus-1;
+    # v.speed is total speed, v.surfaceSpeed is surface speed
     "v.verticalSpeed",
-    "v.surfaceVelocity",
+    "v.surfaceSpeed",
+    "v.speed",
+    # Orbital
     "o.ApA",
     "o.PeA",
     "o.inclination",
     "o.eccentricity",
-    "p.heading",
-    "p.pitch",
-    "p.roll",
+    "o.sma",
+    "o.period",
+    "o.timeToAp",
+    "o.timeToPe",
+    "o.trueAnomaly",
+    "o.lan",
+    "o.argumentOfPeriapsis",
+    # Attitude — NOTE: p.heading/p.pitch/p.roll do NOT exist;
+    # Telemachus-1 uses n.heading/n.pitch/n.roll (navball frame)
+    "n.heading",
+    "n.pitch",
+    "n.roll",
+    # Time — NOTE: t.missionTime does NOT exist;
+    # Telemachus-1 uses v.missionTime
     "t.universalTime",
-    "t.missionTime",
+    "v.missionTime",
+    # Flight control
     "f.throttle",
+    # Vessel-wide resources
     "r.resource[LiquidFuel]",
     "r.resource[SolidFuel]",
+    "r.resource[Oxidizer]",
+    "r.resource[ElectricCharge]",
+    "r.resourceMax[LiquidFuel]",
+    "r.resourceMax[SolidFuel]",
+    "r.resourceMax[Oxidizer]",
+    "r.resourceMax[ElectricCharge]",
+    # Current-stage resources
+    "r.resourceCurrent[LiquidFuel]",
+    "r.resourceCurrent[SolidFuel]",
+    "r.resourceCurrent[Oxidizer]",
+    "r.resourceCurrentMax[LiquidFuel]",
+    "r.resourceCurrentMax[SolidFuel]",
+    "r.resourceCurrentMax[Oxidizer]",
+    # Vessel mass / forces / atmosphere
+    "v.mass",
+    "v.geeForce",
+    "v.mach",
+    "v.dynamicPressurekPa",
     "v.atmosphericDensity",
     "v.lat",
     "v.long",
+    # Stage info
+    "v.currentStage",
+    # Delta-V totals
+    "dv.ready",
+    "dv.stageCount",
+    "dv.totalDVVac",
+    "dv.totalDVASL",
+    "dv.totalDVActual",
+    "dv.totalBurnTime",
 ]
 
 # Human-readable field mapping: Telemachus topic -> internal key
+# Verified against TeaGuild/Telemachus-1 source (VesselDataHandlers.cs,
+# FlightControlHandlers.cs, ResourceHandlers.cs, DeltaVHandlers.cs,
+# SystemHandlers.cs).
 FIELD_MAP = {
-    "v.altitude":             "altitude",          # m
-    "v.velocity":             "velocity",          # m/s
+    "v.altitude":             "altitude",          # m ASL
+    "v.heightFromTerrain":    "height_terrain",    # m AGL
     "v.verticalSpeed":        "v_vert",            # m/s
-    "v.surfaceVelocity":      "v_horiz",           # m/s (approx)
+    "v.surfaceSpeed":         "v_horiz",           # m/s surface frame
+    "v.speed":                "velocity",          # m/s total (orbital frame)
     "o.ApA":                  "apoapsis",          # m
     "o.PeA":                  "periapsis",         # m
     "o.inclination":          "inclination",       # deg
     "o.eccentricity":         "eccentricity",
-    "p.heading":              "heading",           # deg
-    "p.pitch":                "pitch",             # deg, +up/-down from horizon
-    "p.roll":                 "roll",              # deg
+    "o.sma":                  "sma",               # m
+    "o.period":               "period",            # s
+    "o.timeToAp":             "time_to_ap",        # s
+    "o.timeToPe":             "time_to_pe",        # s
+    "o.trueAnomaly":          "true_anomaly",      # deg
+    "o.lan":                  "lan",               # deg
+    "o.argumentOfPeriapsis":  "arg_pe",            # deg
+    "n.heading":              "heading",           # deg (navball)
+    "n.pitch":                "pitch",             # deg, +up/-down from horizon
+    "n.roll":                 "roll",              # deg
     "t.universalTime":        "universal_time",    # s
-    "t.missionTime":          "mission_time",      # s (MET)
+    "v.missionTime":          "mission_time",      # s (MET)
     "f.throttle":             "throttle",          # 0-1
     "r.resource[LiquidFuel]": "liquid_fuel",
     "r.resource[SolidFuel]":  "solid_fuel",
+    "r.resource[Oxidizer]":   "oxidizer",
+    "r.resource[ElectricCharge]": "electric_charge",
+    "r.resourceMax[LiquidFuel]": "liquid_fuel_max",
+    "r.resourceMax[SolidFuel]":  "solid_fuel_max",
+    "r.resourceMax[Oxidizer]":   "oxidizer_max",
+    "r.resourceMax[ElectricCharge]": "electric_charge_max",
+    "r.resourceCurrent[LiquidFuel]":  "stage_liquid_fuel",
+    "r.resourceCurrent[SolidFuel]":   "stage_solid_fuel",
+    "r.resourceCurrent[Oxidizer]":    "stage_oxidizer",
+    "r.resourceCurrentMax[LiquidFuel]":  "stage_liquid_fuel_max",
+    "r.resourceCurrentMax[SolidFuel]":   "stage_solid_fuel_max",
+    "r.resourceCurrentMax[Oxidizer]":    "stage_oxidizer_max",
+    "v.mass":                 "mass",              # tonnes
+    "v.geeForce":             "g_force",
+    "v.mach":                 "mach",
+    "v.dynamicPressurekPa":   "dynamic_pressure",  # kPa
     "v.atmosphericDensity":   "atm_density",       # kg/m³
     "v.lat":                  "latitude",          # deg
     "v.long":                 "longitude",         # deg
+    "v.currentStage":         "current_stage",
+    "dv.ready":               "dv_ready",
+    "dv.stageCount":          "dv_stage_count",
+    "dv.totalDVVac":          "dv_total_vac",      # m/s
+    "dv.totalDVASL":          "dv_total_asl",      # m/s
+    "dv.totalDVActual":       "dv_total_actual",   # m/s
+    "dv.totalBurnTime":       "dv_total_burn_time", # s
 }
+
+# Per-stage dV topic templates — expanded with actual stage indices at runtime
+STAGE_DV_TOPICS = [
+    "dv.stageDVVac", "dv.stageDVASL", "dv.stageDVActual",
+    "dv.stageTWRVac", "dv.stageTWRASL", "dv.stageTWRActual",
+    "dv.stageISPVac", "dv.stageISPASL", "dv.stageISPActual",
+    "dv.stageThrustVac", "dv.stageThrustASL", "dv.stageThrustActual",
+    "dv.stageBurnTime",
+    "dv.stageMass", "dv.stageDryMass", "dv.stageFuelMass",
+    "dv.stageStartMass", "dv.stageEndMass",
+]
 
 # Default / disconnected state (all zeros/None)
 EMPTY_STATE = {v: None for v in FIELD_MAP.values()}
@@ -163,6 +264,7 @@ class TelematicusClient:
         self._state: dict = dict(EMPTY_STATE)
         self._state["connected"] = False
         self._state["error"] = None
+        self._state["stages"] = []
         self._lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
@@ -173,6 +275,9 @@ class TelematicusClient:
         self._trajectory_lock = threading.Lock()
         # Launch longitude: captured at T+0 to compute delta-longitude for downrange
         self._launch_lon: Optional[float] = None
+        # Per-stage dV subscriptions — expanded once dv.stageCount is known
+        self._stage_topics_subscribed: int = 0
+        self._stage_field_map: dict = {}
 
     def get_state(self) -> dict:
         """Return a snapshot of the current telemetry state (thread-safe)."""
@@ -225,21 +330,48 @@ class TelematicusClient:
 
         ws = websocket.create_connection(self.url, timeout=5)
         try:
-            # Subscribe to all topics
             sub_msg = json.dumps({"rate": self.rate_ms, "+": SUBSCRIBED_TOPICS})
             ws.send(sub_msg)
             with self._lock:
                 self._state["connected"] = True
                 self._state["error"] = None
+                self._stage_topics_subscribed = 0
             logger.info("Connected to Telemachus at %s", self.url)
 
             while not self._stop_event.is_set():
                 raw = ws.recv()
                 self._handle_message(raw)
+                self._maybe_subscribe_stage_topics(ws)
         finally:
             ws.close()
             with self._lock:
                 self._state["connected"] = False
+
+    def _maybe_subscribe_stage_topics(self, ws):
+        with self._lock:
+            stage_count = self._state.get("dv_stage_count")
+            if not stage_count or not isinstance(stage_count, (int, float)):
+                return
+            stage_count = int(stage_count)
+            if stage_count <= 0 or stage_count == self._stage_topics_subscribed:
+                return
+
+        topics = []
+        field_map = {}
+        for i in range(stage_count):
+            for base in STAGE_DV_TOPICS:
+                topic = f"{base}[{i}]"
+                short = base.replace("dv.stage", "").lower()
+                key = f"stage_{i}_{short}"
+                topics.append(topic)
+                field_map[topic] = key
+
+        sub_msg = json.dumps({"+": topics})
+        ws.send(sub_msg)
+        with self._lock:
+            self._stage_field_map.update(field_map)
+            self._stage_topics_subscribed = stage_count
+        logger.info("Subscribed to per-stage dV topics for %d stages", stage_count)
 
     def _handle_message(self, raw: str):
         """Parse a Telemachus JSON message and update state."""
@@ -253,6 +385,12 @@ class TelematicusClient:
                 key = FIELD_MAP.get(topic)
                 if key:
                     self._state[key] = value
+                else:
+                    key = self._stage_field_map.get(topic)
+                    if key:
+                        self._state[key] = value
+
+            self._rebuild_stages_locked()
 
             # Build a trajectory point if we have position data
             alt = self._state.get("altitude")
@@ -261,11 +399,8 @@ class TelematicusClient:
                 lat = self._state.get("latitude", 0) or 0
                 lon = self._state.get("longitude", 0) or 0
 
-                # Capture launch longitude on first valid position fix
                 if self._launch_lon is None and met < 3.0:
                     self._launch_lon = lon
-                # Previous formula used Earth's 111.12 km/deg scale (10.6× error)
-                # and abs(lat) instead of cos(lat).
                 lon_delta = lon - (self._launch_lon if self._launch_lon is not None else lon)
                 dr_km = compute_downrange_km(lon_delta, lat)
 
@@ -281,10 +416,6 @@ class TelematicusClient:
 
         if alt is not None and alt > 0 and met is not None and met > 0:
             with self._trajectory_lock:
-                # Fix P2-06: detect flight reset — MET drops below 5s after the
-                # craft has been flying for over 30s — indicating a new launch.
-                # Clear the trajectory and reset the launch longitude so the new
-                # flight doesn't append onto the previous session's track.
                 if (self._trajectory and
                         met < 5.0 and
                         self._trajectory[-1]["t"] > 30.0):
@@ -292,7 +423,6 @@ class TelematicusClient:
                     self._launch_lon = None
                     logger.info("mission_time reset detected — trajectory cleared for new flight")
 
-                # Downsample: only add a point if significant time has passed
                 if not self._trajectory or (met - self._trajectory[-1]["t"]) > 0.5:
                     self._trajectory.append(point)
 
@@ -301,6 +431,43 @@ class TelematicusClient:
                 self.on_update(self.get_state())
             except Exception as exc:
                 logger.warning("on_update callback error: %s", exc)
+
+    def _rebuild_stages_locked(self):
+        """Build the stages list from per-stage dV data in self._state. Caller holds _lock."""
+        count = self._state.get("dv_stage_count")
+        if not count or not isinstance(count, (int, float)):
+            return
+        count = int(count)
+        stages = []
+        for i in range(count):
+            def _get(short):
+                return self._state.get(f"stage_{i}_{short}")
+            dv_vac = _get("dvvac")
+            fuel_mass = _get("fuelmass")
+            if dv_vac is None and fuel_mass is None:
+                continue
+            stages.append({
+                "index": i,
+                "dv_vac": _get("dvvac"),
+                "dv_asl": _get("dvasl"),
+                "dv_actual": _get("dvactual"),
+                "twr_vac": _get("twrvac"),
+                "twr_asl": _get("twrasl"),
+                "twr_actual": _get("twractual"),
+                "isp_vac": _get("ispvac"),
+                "isp_asl": _get("ispasl"),
+                "isp_actual": _get("ispactual"),
+                "thrust_vac": _get("thrustvac"),
+                "thrust_asl": _get("thrustasl"),
+                "thrust_actual": _get("thrustactual"),
+                "burn_time": _get("burntime"),
+                "mass": _get("mass"),
+                "dry_mass": _get("drymass"),
+                "fuel_mass": _get("fuelmass"),
+                "start_mass": _get("startmass"),
+                "end_mass": _get("endmass"),
+            })
+        self._state["stages"] = stages
 
 
 class SimulatedTelemetry:
@@ -362,17 +529,120 @@ class SimulatedTelemetry:
         if self._thread:
             self._thread.join(timeout=3.0)
 
-    def _compute_liquid_fuel(self, elapsed, phase):
-        core_burn_time = 60.0
-        terrier_burn_time = 225.0
-        if elapsed < core_burn_time:
-            return max(0, 360 - elapsed * (360 / core_burn_time))
-        if phase in ("TERRIER", "CIRCULARIZE"):
-            terrier_elapsed = elapsed - core_burn_time
-            return max(0, 360 - terrier_elapsed * (360 / terrier_burn_time))
-        if phase in ("COAST_APO",):
-            return 360 * max(0, 1.0 - (elapsed - core_burn_time) / terrier_burn_time)
-        return 0
+    def _compute_liquid_fuel_from_mass(self, mass, phase):
+        mission_wet = 6.250
+        mission_dry = 2.250
+        core_dry_with_mission = 8.102
+        if phase in ("BOOST", "CORE"):
+            fuel_frac = max(0, (mass - core_dry_with_mission) /
+                           (14.21 - core_dry_with_mission))
+            return 360.0 * fuel_frac
+        prop_remaining = max(0, mass - mission_dry)
+        prop_total = mission_wet - mission_dry
+        return 360.0 * min(1.0, prop_remaining / prop_total)
+
+    @staticmethod
+    def _extract_stage_timing(points):
+        """Extract phase transition times from trajectory points."""
+        srb_end = 25.3
+        core_end = 61.0
+        terrier_end = 61.0
+        prev_phase = None
+        for p in points:
+            if prev_phase == "BOOST" and p.phase != "BOOST":
+                srb_end = p.t
+            if prev_phase == "CORE" and p.phase not in ("BOOST", "CORE"):
+                core_end = p.t
+            if prev_phase == "TERRIER" and p.phase != "TERRIER":
+                terrier_end = p.t
+            prev_phase = p.phase
+        return {"srb_end": srb_end, "core_end": core_end,
+                "terrier_start": core_end, "terrier_end": terrier_end}
+
+    def _build_sim_stages(self, elapsed, timing):
+        """Build stage list using time-based fuel depletion.
+
+        All stages are always present. Each stage's dV depletes only
+        during its active burn window. Status indicates whether the
+        stage is pending, active, or depleted.
+        """
+        srb_end = timing["srb_end"]
+        core_end = timing["core_end"]
+        terrier_start = timing["terrier_start"]
+        terrier_end = timing["terrier_end"]
+
+        srb_initial_dv = 222.0
+        core_initial_dv = 1100.0
+        terrier_initial_dv = 3458.0
+
+        if elapsed < srb_end:
+            srb_frac = max(0, 1.0 - elapsed / srb_end)
+            srb_status = "active"
+        else:
+            srb_frac = 0.0
+            srb_status = "depleted"
+
+        if elapsed < core_end:
+            core_frac = max(0, 1.0 - elapsed / core_end)
+            core_status = "active"
+        else:
+            core_frac = 0.0
+            core_status = "depleted"
+
+        if elapsed < terrier_start:
+            terrier_frac = 1.0
+            terrier_status = "pending"
+        elif elapsed < terrier_end:
+            terrier_frac = max(0, 1.0 - (elapsed - terrier_start) / (terrier_end - terrier_start))
+            terrier_status = "active"
+        else:
+            terrier_frac = (terrier_end - terrier_start) / (terrier_end - terrier_start)
+            burn_duration = terrier_end - terrier_start
+            remaining_prop = 1.0 - burn_duration / max(0.01, burn_duration)
+            terrier_frac = max(0, remaining_prop) if terrier_end < timing.get("total", 9999) else 0.0
+            terrier_status = "depleted"
+
+        # After terrier burn, maintain the remaining dV (coast with fuel left)
+        if elapsed >= terrier_end:
+            terrier_burn_frac = min(1.0, (terrier_end - terrier_start) / 225.0)
+            terrier_frac = max(0, 1.0 - terrier_burn_frac)
+            terrier_status = "depleted"
+
+        return [
+            {
+                "index": 0, "label": "Stage 0",
+                "dv_vac": srb_frac * srb_initial_dv,
+                "dv_asl": srb_frac * 170.0,
+                "dv_initial": srb_initial_dv,
+                "fuel_mass": srb_frac * 1.200,
+                "dry_mass": 0.908,
+                "mass": srb_frac * 1.200 + 0.908,
+                "burn_time": max(0, srb_end - elapsed) if srb_status == "active" else 0,
+                "status": srb_status,
+            },
+            {
+                "index": 1, "label": "Stage 1",
+                "dv_vac": core_frac * core_initial_dv,
+                "dv_asl": core_frac * 900.0,
+                "dv_initial": core_initial_dv,
+                "fuel_mass": core_frac * 4.0,
+                "dry_mass": 1.8525,
+                "mass": core_frac * 4.0 + 1.8525,
+                "burn_time": max(0, core_end - elapsed) if core_status == "active" else 0,
+                "status": core_status,
+            },
+            {
+                "index": 2, "label": "Stage 2",
+                "dv_vac": terrier_frac * terrier_initial_dv,
+                "dv_asl": terrier_frac * 800.0,
+                "dv_initial": terrier_initial_dv,
+                "fuel_mass": terrier_frac * 4.0,
+                "dry_mass": 2.250,
+                "mass": terrier_frac * 4.0 + 2.250,
+                "burn_time": max(0, terrier_end - elapsed) if terrier_status == "active" else 0,
+                "status": terrier_status,
+            },
+        ]
 
     def _run(self):
         import random
@@ -384,16 +654,14 @@ class SimulatedTelemetry:
 
         self._start_time = time.time()
         pt_idx = 0
+        timing = self._extract_stage_timing(pts)
 
         while not self._stop_event.is_set():
             elapsed = time.time() - self._start_time
-            # Fix P2-06: if elapsed resets (e.g., start_time was reset externally),
-            # clear the trajectory so the new simulated flight starts clean.
             with self._trajectory_lock:
                 if (elapsed < 1.0 and self._trajectory and
                         self._trajectory[-1]["t"] > 30.0):
                     self._trajectory.clear()
-            # Advance through nominal points up to current elapsed time
             while pt_idx + 1 < len(pts) and pts[pt_idx + 1].t <= elapsed:
                 pt_idx += 1
 
@@ -424,6 +692,13 @@ class SimulatedTelemetry:
             apoapsis = noise(p.apoapsis * 1000) if p.apoapsis and not landed else 0
             periapsis = p.periapsis * 1000 if p.periapsis and not landed else 0
 
+            lf = self._compute_liquid_fuel_from_mass(p.mass, p.phase)
+            sf = max(0, 160 - elapsed * (160 / 25.3)) if elapsed < 25.3 else 0
+            lf_max = 360.0
+            sf_max = 160.0
+
+            sim_stages = self._build_sim_stages(elapsed, timing)
+
             state = {
                 "connected": True, "simulated": True,
                 "altitude": alt,
@@ -432,16 +707,28 @@ class SimulatedTelemetry:
                 "v_horiz": v_h,
                 "apoapsis": apoapsis,
                 "periapsis": periapsis,
+                "inclination": 0.0,
+                "time_to_ap": max(0, 61 - elapsed) if not landed else None,
+                "time_to_pe": None,
                 "pitch": pitch,
                 "heading": 90.0,
                 "roll": random.uniform(-2, 2) if not landed else 0.0,
                 "mission_time": elapsed,
                 "throttle": 0.0 if landed else (1.0 if p.phase in ("BOOST", "CORE", "TERRIER", "CIRCULARIZE") else 0.0),
-                "liquid_fuel": self._compute_liquid_fuel(elapsed, p.phase),
-                "solid_fuel":  max(0, 160 - elapsed * (160 / 25.3)) if elapsed < 25.3 else 0,
+                "liquid_fuel": lf,
+                "solid_fuel": sf,
+                "liquid_fuel_max": lf_max,
+                "solid_fuel_max": sf_max,
+                "oxidizer": lf * (11.0 / 9.0),
+                "oxidizer_max": lf_max * (11.0 / 9.0),
+                "mass": p.mass,
+                "g_force": noise(p.velocity / max(1, elapsed)) * 0.1 if not landed else 1.0,
+                "mach": vel / 343.0 if alt < 70000 and not landed else 0.0,
+                "dynamic_pressure": 0.5 * (1.225 * (2.718 ** (-alt / 5000))) * vel * vel / 1000.0 if alt < 70000 and not landed else 0.0,
                 "atm_density": 1.225 if landed else (1.225 * (2.718 ** (-alt / 5000)) if alt < 70000 else 0),
                 "phase": phase,
                 "error": None,
+                "stages": sim_stages,
             }
 
             with self._lock:
@@ -545,6 +832,8 @@ class ScriptedTelemetry:
     def start(self):
         if not self._points:
             return
+        if self._thread and self._thread.is_alive():
+            self.stop()
         self._stop_event.clear()
         with self._lock:
             self._playback_state = "playing"
@@ -629,17 +918,102 @@ class ScriptedTelemetry:
             "n_points": len(self._points),
         }
 
-    def _compute_liquid_fuel(self, elapsed, phase):
-        core_burn_time = 60.0
-        terrier_burn_time = 225.0
-        if elapsed < core_burn_time:
-            return max(0, 360 - elapsed * (360 / core_burn_time))
-        if phase in ("TERRIER", "CIRCULARIZE"):
-            terrier_elapsed = elapsed - core_burn_time
-            return max(0, 360 - terrier_elapsed * (360 / terrier_burn_time))
-        if phase in ("COAST_APO",):
-            return 360 * max(0, 1.0 - (elapsed - core_burn_time) / terrier_burn_time)
-        return 0
+    def _compute_liquid_fuel_from_mass(self, mass, phase):
+        cfg = self._vehicle_cfg
+        mission_wet = cfg.mission_stage_wet if cfg else 6.250
+        mission_dry = cfg.mission_stage_dry if cfg else 2.250
+        if phase in ("BOOST", "CORE"):
+            liftoff = cfg.liftoff_mass_t if cfg else 14.21
+            core_prop = cfg.core_stage_prop if cfg else 4.0
+            booster_dry = cfg.booster_set_dry if cfg else 0.908
+            booster_prop = cfg.booster_set_prop if cfg else 1.200
+            core_dry_with_mission = liftoff - core_prop - booster_dry - booster_prop
+            fuel_frac = max(0, (mass - core_dry_with_mission) /
+                           max(0.01, liftoff - core_dry_with_mission))
+            return 360.0 * fuel_frac
+        prop_remaining = max(0, mass - mission_dry)
+        prop_total = max(0.01, mission_wet - mission_dry)
+        return 360.0 * min(1.0, prop_remaining / prop_total)
+
+    def _build_scripted_stages(self, elapsed, timing):
+        """Build stage list using time-based fuel depletion (same as SimulatedTelemetry)."""
+        cfg = self._vehicle_cfg
+        srb_end = timing["srb_end"]
+        core_end = timing["core_end"]
+        terrier_start = timing["terrier_start"]
+        terrier_end = timing["terrier_end"]
+
+        srb_initial_dv = 222.0
+        core_initial_dv = 1100.0
+        terrier_initial_dv = cfg.mission_stage_dv_ms if cfg else 3458.0
+
+        if elapsed < srb_end:
+            srb_frac = max(0, 1.0 - elapsed / srb_end)
+            srb_status = "active"
+        else:
+            srb_frac = 0.0
+            srb_status = "depleted"
+
+        if elapsed < core_end:
+            core_frac = max(0, 1.0 - elapsed / core_end)
+            core_status = "active"
+        else:
+            core_frac = 0.0
+            core_status = "depleted"
+
+        if elapsed < terrier_start:
+            terrier_frac = 1.0
+            terrier_status = "pending"
+        elif elapsed < terrier_end:
+            terrier_frac = max(0, 1.0 - (elapsed - terrier_start) / (terrier_end - terrier_start))
+            terrier_status = "active"
+        else:
+            terrier_burn_frac = min(1.0, (terrier_end - terrier_start) / 225.0)
+            terrier_frac = max(0, 1.0 - terrier_burn_frac)
+            terrier_status = "depleted"
+
+        booster_prop = cfg.booster_set_prop if cfg else 1.200
+        booster_dry = cfg.booster_set_dry if cfg else 0.908
+        core_prop = cfg.core_stage_prop if cfg else 4.0
+        mission_wet = cfg.mission_stage_wet if cfg else 6.250
+        mission_dry = cfg.mission_stage_dry if cfg else 2.250
+        mission_prop = mission_wet - mission_dry
+
+        return [
+            {
+                "index": 0, "label": "Stage 0",
+                "dv_vac": srb_frac * srb_initial_dv,
+                "dv_asl": srb_frac * 170.0,
+                "dv_initial": srb_initial_dv,
+                "fuel_mass": srb_frac * booster_prop,
+                "dry_mass": booster_dry,
+                "mass": srb_frac * booster_prop + booster_dry,
+                "burn_time": max(0, srb_end - elapsed) if srb_status == "active" else 0,
+                "status": srb_status,
+            },
+            {
+                "index": 1, "label": "Stage 1",
+                "dv_vac": core_frac * core_initial_dv,
+                "dv_asl": core_frac * 900.0,
+                "dv_initial": core_initial_dv,
+                "fuel_mass": core_frac * core_prop,
+                "dry_mass": 1.8525,
+                "mass": core_frac * core_prop + 1.8525,
+                "burn_time": max(0, core_end - elapsed) if core_status == "active" else 0,
+                "status": core_status,
+            },
+            {
+                "index": 2, "label": "Stage 2",
+                "dv_vac": terrier_frac * terrier_initial_dv,
+                "dv_asl": terrier_frac * 800.0,
+                "dv_initial": terrier_initial_dv,
+                "fuel_mass": terrier_frac * mission_prop,
+                "dry_mass": mission_dry,
+                "mass": terrier_frac * mission_prop + mission_dry,
+                "burn_time": max(0, terrier_end - elapsed) if terrier_status == "active" else 0,
+                "status": terrier_status,
+            },
+        ]
 
     def _run(self):
         import random
@@ -650,18 +1024,18 @@ class ScriptedTelemetry:
 
         pt_idx = 0
         noise_pct = self._scenario.noise_pct if self._scenario else 0.02
+        timing = SimulatedTelemetry._extract_stage_timing(pts)
 
         while not self._stop_event.is_set():
             with self._lock:
-                if self._playback_state == "paused":
-                    time.sleep(self.rate_ms / 1000.0)
-                    continue
-
                 if self._playback_state != "playing":
-                    time.sleep(self.rate_ms / 1000.0)
-                    continue
+                    pass  # will sleep below, outside the lock
+                else:
+                    elapsed = self._get_sim_elapsed_locked()
 
-                elapsed = self._get_sim_elapsed_locked()
+            if self._playback_state != "playing":
+                time.sleep(self.rate_ms / 1000.0)
+                continue
 
             while pt_idx + 1 < len(pts) and pts[pt_idx + 1].t <= elapsed:
                 pt_idx += 1
@@ -696,10 +1070,17 @@ class ScriptedTelemetry:
             apoapsis = noise(p.apoapsis * 1000) if p.apoapsis and not landed else 0
             periapsis = p.periapsis * 1000 if p.periapsis and not landed else 0
 
-            srb_burn_time = self._vehicle_cfg.srb_burn_time_s if self._vehicle_cfg else 25.3
+            cfg = self._vehicle_cfg
+            srb_burn_time = cfg.srb_burn_time_s if cfg else 25.3
             lf_total = 360.0
-            sf_total = 160.0 if (self._vehicle_cfg and self._vehicle_cfg.n_boosters > 0) else 0
+            sf_total = (cfg.booster_set_prop / 0.0075) if (cfg and cfg.n_boosters > 0) else 0
 
+            lf = self._compute_liquid_fuel_from_mass(p.mass, p.phase)
+            sf = max(0, sf_total - elapsed * (sf_total / srb_burn_time)) if elapsed < srb_burn_time else 0
+
+            sim_stages = self._build_scripted_stages(elapsed, timing)
+
+            total_sim_time = pts[-1].t if pts else 61
             state = {
                 "connected": True, "simulated": True, "scripted": True,
                 "altitude": alt,
@@ -708,17 +1089,29 @@ class ScriptedTelemetry:
                 "v_horiz": v_h,
                 "apoapsis": apoapsis,
                 "periapsis": periapsis,
+                "inclination": 0.0,
+                "time_to_ap": max(0, total_sim_time - elapsed) if not landed else None,
+                "time_to_pe": None,
                 "pitch": pitch,
                 "heading": 90.0,
                 "roll": (random.uniform(-2, 2) if noise_pct > 0 else 0.0) if not landed else 0.0,
                 "mission_time": elapsed,
                 "throttle": 0.0 if landed else (1.0 if p.phase in ("BOOST", "CORE", "TERRIER", "CIRCULARIZE") else 0.0),
-                "liquid_fuel": self._compute_liquid_fuel(elapsed, p.phase),
-                "solid_fuel": max(0, sf_total - elapsed * (sf_total / srb_burn_time)) if elapsed < srb_burn_time else 0,
+                "liquid_fuel": lf,
+                "solid_fuel": sf,
+                "liquid_fuel_max": lf_total,
+                "solid_fuel_max": sf_total,
+                "oxidizer": lf * (11.0 / 9.0),
+                "oxidizer_max": lf_total * (11.0 / 9.0),
+                "mass": p.mass,
+                "g_force": 1.0,
+                "mach": vel / 343.0 if alt < 70000 and not landed else 0.0,
+                "dynamic_pressure": 0.5 * (1.225 * (2.718 ** (-alt / 5000))) * vel * vel / 1000.0 if alt < 70000 and not landed else 0.0,
                 "atm_density": 1.225 if landed else (1.225 * (2.718 ** (-alt / 5000)) if alt < 70000 else 0),
                 "phase": phase,
                 "error": None,
                 "playback": self.get_playback_status(),
+                "stages": sim_stages,
             }
 
             with self._lock:

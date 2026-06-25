@@ -196,7 +196,7 @@ class TestP002SimFuelDrain(unittest.TestCase):
         # The real code is in SimulatedTelemetry. Verify it via source inspection.
         import inspect
         from mission_control.telemachus_client import SimulatedTelemetry
-        src = inspect.getsource(SimulatedTelemetry._compute_liquid_fuel)
+        src = inspect.getsource(SimulatedTelemetry._compute_liquid_fuel_from_mass)
         self.assertNotIn('4000', src,
             "SimulatedTelemetry must not reference 4000. Fix: change 4000→360.")
         self.assertIn('360', src,

@@ -452,6 +452,245 @@ class TestScriptedDirectorIntegration(unittest.TestCase):
         self.assertIn("advisory", result)
         self.assertIn("gates", result)
 
+    def test_no_false_circularize_during_terrier_ascent(self):
+        """detect_phase must not return CIRCULARIZE when apoapsis first passes
+        60km during Terrier burn. At that point v_vert is ~211 m/s — the vehicle
+        is still ascending, not near apoapsis."""
+        from mission_control.nominal_compare import detect_phase, FlightPhase
+        state = {
+            "altitude": 48600.0, "apoapsis": 60200.0, "periapsis": -195700.0,
+            "mission_time": 204.5, "solid_fuel": 0.0, "liquid_fuel": 200.0,
+            "throttle": 1.0, "pitch": 50.0, "velocity": 1100.0,
+            "v_horiz": 900.0, "v_vert": 211.0,
+        }
+        phase = detect_phase(state, FlightPhase.TERRIER)
+        self.assertEqual(phase, FlightPhase.TERRIER,
+            f"At 48.6km alt / 60.2km apo / v_vert=211 m/s, phase should be TERRIER "
+            f"(still ascending), got {phase.value}")
+
+    def test_circularize_detected_near_apoapsis(self):
+        """detect_phase should return CIRCULARIZE when near apoapsis
+        (v_vert near zero) with apo >= 60km and pe < 65km."""
+        from mission_control.nominal_compare import detect_phase, FlightPhase
+        state = {
+            "altitude": 80000.0, "apoapsis": 80500.0, "periapsis": 20000.0,
+            "mission_time": 472.0, "solid_fuel": 0.0, "liquid_fuel": 100.0,
+            "throttle": 1.0, "pitch": 0.5, "velocity": 2200.0,
+            "v_horiz": 2200.0, "v_vert": 3.0,
+        }
+        phase = detect_phase(state, FlightPhase.TERRIER)
+        self.assertEqual(phase, FlightPhase.CIRCULARIZE,
+            f"At 80km alt / v_vert~0 / pe=20km, should be CIRCULARIZE, got {phase.value}")
+
+    def test_detect_phase_full_sequence(self):
+        """detect_phase must correctly transition through the full nominal
+        phase sequence when fed actual simulated telemetry states."""
+        from mission_control.nominal_compare import detect_phase, FlightPhase
+        from mission_control.telemachus_client import ScriptedTelemetry
+        from mission_control.scenario import LaunchScenario
+
+        st = ScriptedTelemetry(rate_ms=50)
+        st.load_scenario(LaunchScenario(noise_pct=0.0, playback_speed=50.0))
+        st.start()
+
+        seen_phases = set()
+        prev_phase = FlightPhase.PRELAUNCH
+        for _ in range(300):
+            time.sleep(0.05)
+            state = st.get_state()
+            if not state or state.get("mission_time", 0) < 0.1:
+                continue
+            phase = detect_phase(state, prev_phase)
+            seen_phases.add(phase.value)
+            prev_phase = phase
+            if state.get("mission_time", 0) > 490:
+                break
+        st.stop()
+
+        for expected in ("BOOST", "CORE", "TERRIER", "CIRCULARIZE", "ORBIT"):
+            self.assertIn(expected, seen_phases,
+                f"Phase {expected} should appear during full nominal ascent. "
+                f"Seen: {sorted(seen_phases)}")
+
+
+class TestTelemetryFuelModel(unittest.TestCase):
+    """Tests that simulated telemetry reports realistic fuel values
+    throughout the full ascent, including coast and circularization phases."""
+
+    def test_fuel_nonzero_during_coast_apo(self):
+        """Liquid fuel must remain positive during COAST_APO — the Terrier
+        has stopped burning and fuel is preserved for circularization."""
+        from mission_control.telemachus_client import ScriptedTelemetry
+        from mission_control.scenario import LaunchScenario
+
+        st = ScriptedTelemetry(rate_ms=50)
+        st.load_scenario(LaunchScenario(noise_pct=0.0, playback_speed=50.0))
+        st.start()
+
+        coast_apo_fuel = None
+        for _ in range(400):
+            time.sleep(0.05)
+            state = st.get_state()
+            if not state:
+                continue
+            if state.get("phase") == "COAST_APO":
+                coast_apo_fuel = state.get("liquid_fuel", 0)
+                break
+        st.stop()
+
+        self.assertIsNotNone(coast_apo_fuel,
+            "COAST_APO phase was never reached during playback")
+        self.assertGreater(coast_apo_fuel, 0,
+            f"Liquid fuel during COAST_APO should be > 0 (fuel is preserved "
+            f"for circularization), got {coast_apo_fuel}")
+
+    def test_fuel_nonzero_during_circularize(self):
+        """Liquid fuel must remain positive during CIRCULARIZE — the Terrier
+        is burning to raise periapsis."""
+        from mission_control.telemachus_client import ScriptedTelemetry
+        from mission_control.scenario import LaunchScenario
+
+        st = ScriptedTelemetry(rate_ms=50)
+        st.load_scenario(LaunchScenario(noise_pct=0.0, playback_speed=50.0))
+        st.start()
+
+        circ_fuel = None
+        for _ in range(400):
+            time.sleep(0.05)
+            state = st.get_state()
+            if not state:
+                continue
+            if state.get("phase") == "CIRCULARIZE":
+                circ_fuel = state.get("liquid_fuel", 0)
+                break
+        st.stop()
+
+        self.assertIsNotNone(circ_fuel,
+            "CIRCULARIZE phase was never reached during playback")
+        self.assertGreater(circ_fuel, 0,
+            f"Liquid fuel during CIRCULARIZE should be > 0 (Terrier is still "
+            f"burning), got {circ_fuel}")
+
+    def test_fuel_positive_at_orbit_insertion(self):
+        """At orbit insertion there should be remaining fuel for TMI burn."""
+        from mission_control.telemachus_client import ScriptedTelemetry
+        from mission_control.scenario import LaunchScenario
+
+        st = ScriptedTelemetry(rate_ms=50)
+        st.load_scenario(LaunchScenario(noise_pct=0.0, playback_speed=50.0))
+        st.start()
+
+        orbit_fuel = None
+        for _ in range(400):
+            time.sleep(0.05)
+            state = st.get_state()
+            if not state:
+                continue
+            if state.get("phase") == "ORBIT":
+                orbit_fuel = state.get("liquid_fuel", 0)
+                break
+        st.stop()
+
+        self.assertIsNotNone(orbit_fuel,
+            "ORBIT phase was never reached during playback")
+        self.assertGreater(orbit_fuel, 0,
+            f"Liquid fuel at orbit insertion should be > 0 (TMI fuel remaining), "
+            f"got {orbit_fuel}")
+
+    def test_fuel_decreases_monotonically_during_powered_phases(self):
+        """During powered flight (BOOST, CORE, TERRIER, CIRCULARIZE),
+        liquid fuel should decrease over time, not increase."""
+        from mission_control.telemachus_client import ScriptedTelemetry
+        from mission_control.scenario import LaunchScenario
+
+        st = ScriptedTelemetry(rate_ms=50)
+        st.load_scenario(LaunchScenario(noise_pct=0.0, playback_speed=50.0))
+        st.start()
+
+        fuel_by_phase = {}
+        for _ in range(400):
+            time.sleep(0.05)
+            state = st.get_state()
+            if not state:
+                continue
+            phase = state.get("phase", "")
+            lf = state.get("liquid_fuel", 0)
+            met = state.get("mission_time", 0)
+            if phase in ("CORE", "TERRIER", "CIRCULARIZE"):
+                if phase not in fuel_by_phase:
+                    fuel_by_phase[phase] = []
+                fuel_by_phase[phase].append((met, lf))
+            if met > 490:
+                break
+        st.stop()
+
+        for phase, readings in fuel_by_phase.items():
+            if len(readings) < 2:
+                continue
+            first_fuel = readings[0][1]
+            last_fuel = readings[-1][1]
+            self.assertGreater(first_fuel, last_fuel,
+                f"Fuel should decrease during {phase}: "
+                f"started at {first_fuel:.1f}, ended at {last_fuel:.1f}")
+
+    def test_fuel_constant_during_coast(self):
+        """During COAST_APO, fuel should remain approximately constant
+        (no engines burning)."""
+        from mission_control.telemachus_client import ScriptedTelemetry
+        from mission_control.scenario import LaunchScenario
+
+        st = ScriptedTelemetry(rate_ms=50)
+        st.load_scenario(LaunchScenario(noise_pct=0.0, playback_speed=50.0))
+        st.start()
+
+        coast_fuels = []
+        for _ in range(400):
+            time.sleep(0.05)
+            state = st.get_state()
+            if not state:
+                continue
+            if state.get("phase") == "COAST_APO":
+                coast_fuels.append(state.get("liquid_fuel", 0))
+            if state.get("mission_time", 0) > 490:
+                break
+        st.stop()
+
+        if len(coast_fuels) >= 2:
+            fuel_range = max(coast_fuels) - min(coast_fuels)
+            self.assertLess(fuel_range, 5.0,
+                f"Fuel during COAST_APO should be constant, but varied by "
+                f"{fuel_range:.1f} units (min={min(coast_fuels):.1f}, "
+                f"max={max(coast_fuels):.1f})")
+
+    def test_phase_from_telemetry_matches_sim(self):
+        """The phase field in telemetry state should come from the sim's
+        trajectory point, reflecting the actual planned phase."""
+        from mission_control.telemachus_client import ScriptedTelemetry
+        from mission_control.scenario import LaunchScenario
+
+        st = ScriptedTelemetry(rate_ms=50)
+        st.load_scenario(LaunchScenario(noise_pct=0.0, playback_speed=50.0))
+        st.start()
+
+        seen_phases = set()
+        for _ in range(400):
+            time.sleep(0.05)
+            state = st.get_state()
+            if not state:
+                continue
+            phase = state.get("phase")
+            if phase:
+                seen_phases.add(phase)
+            if state.get("mission_time", 0) > 490:
+                break
+        st.stop()
+
+        for expected in ("BOOST", "CORE", "TERRIER", "COAST_APO",
+                         "CIRCULARIZE", "ORBIT"):
+            self.assertIn(expected, seen_phases,
+                f"Telemetry phase '{expected}' should appear during nominal "
+                f"playback. Seen: {sorted(seen_phases)}")
+
     def test_nominal_regenerates_for_scenario(self):
         """When a scenario with different params is loaded, the sim produces
         different nominal numbers."""
@@ -634,6 +873,938 @@ class TestConstantsAPI(unittest.TestCase):
         self.assertEqual(data["R_KERBIN"], R_KERBIN)
         self.assertEqual(data["MU_KERBIN"], MU_KERBIN)
         self.assertEqual(data["ATM_CEIL"], ATM_CEIL)
+
+
+class TestUIViewport(unittest.TestCase):
+    """Tests that the web UI viewport adapts to the full orbital trajectory."""
+
+    @classmethod
+    def setUpClass(cls):
+        import os
+        html_path = os.path.join(os.path.dirname(__file__),
+                                 '..', 'mission_control', 'static', 'index.html')
+        with open(html_path, 'r') as f:
+            cls.html = f.read()
+
+    def test_timeline_covers_full_mission(self):
+        """Timeline TOTAL must extend past core burnout to cover Terrier + orbit."""
+        import re
+        m = re.search(r'const\s+TOTAL\s*=\s*(\d+)', self.html)
+        self.assertIsNotNone(m, "TOTAL constant not found in timeline code")
+        total = int(m.group(1))
+        self.assertGreaterEqual(total, 480,
+            f"Timeline TOTAL={total} is too short; orbit insertion occurs at ~T+480s")
+
+    def test_timeline_has_terrier_and_orbit_events(self):
+        """Timeline event markers should include Terrier ignition and orbit insertion."""
+        self.assertIn("TERR", self.html,
+            "Timeline should show a Terrier ignition event marker")
+
+    def test_timeline_has_orbit_phase_band(self):
+        """Timeline phase bands should include COAST and ORBIT beyond TERRIER."""
+        import re
+        bands = re.findall(r"label:\s*'(\w+)'", self.html)
+        self.assertIn('COAST', bands,
+            "Timeline phase bands should include a COAST/coast-to-apo band")
+
+    def test_globe_extent_uses_actual_trajectory_not_nominal(self):
+        """Globe dynamic zoom should track the actual trajectory extent,
+        not the full nominal (which goes to orbit and would zoom out too far)."""
+        import re
+        extent_match = re.search(r'extentSources\s*=\s*\[([^\]]+)\]', self.html)
+        self.assertIsNotNone(extent_match)
+        sources = extent_match.group(1)
+        self.assertNotIn('nominalTraj', sources,
+            "Globe extent should NOT include nominalTraj — it zooms too far out")
+        self.assertIn('actualTraj', sources,
+            "Globe extent must include actualTraj to track the vehicle")
+
+    def test_trajectory_plot_auto_range_excludes_orbital_nominal(self):
+        """Trajectory plot auto-range should not include the full orbital
+        nominal trajectory, which would compress the ascent view."""
+        import re
+        allpts_match = re.search(r'allPts\s*=\s*\[([^\]]+)\]', self.html)
+        self.assertIsNotNone(allpts_match)
+        sources = allpts_match.group(1)
+        self.assertNotIn('nominalTraj', sources,
+            "Trajectory plot auto-range should NOT include full nominalTraj")
+
+    def test_nominal_coast_skips_orbital_points(self):
+        """computeNominalCoast should project from the core burnout point,
+        not the last orbital point (which would produce a nonsensical arc)."""
+        self.assertRegex(self.html,
+            r'computeNominalCoast.*?CORE.*?BOOST|burnout|core_burnout|phase\s*[!=]==?\s*["\']ORBIT',
+            "computeNominalCoast should find the core burnout point, not use the last (orbital) point")
+
+    def test_nominal_trajectory_split_for_display(self):
+        """The nominal trajectory should be split into ascent (for detailed
+        display) and orbital (for reference) portions."""
+        self.assertIn('nominalAscent', self.html,
+            "HTML should define nominalAscent for the core stage portion of the trajectory")
+
+    def test_globe_altitude_rings_include_orbit(self):
+        """Globe altitude rings should include the 80km target orbit ring."""
+        import re
+        rings = re.findall(r'\[([^\]]*80[^\]]*)\]\.forEach\(\s*(?:alt_km|a)\s*=>', self.html)
+        self.assertTrue(len(rings) > 0,
+            "Globe should have altitude ring at 80km (target orbit)")
+
+    def test_vehicle_marker_visible_during_ascent(self):
+        """The vehicle position marker must be drawn when altitude > 100m
+        (not just during specific phases)."""
+        self.assertIn('altitude', self.html)
+        import re
+        marker_check = re.search(r'altitude.*>\s*100', self.html)
+        self.assertIsNotNone(marker_check,
+            "Vehicle marker visibility check (altitude > 100) must exist")
+
+
+class TestUILayoutVisibility(unittest.TestCase):
+    """Tests that the interface layout doesn't clip or hide panels.
+
+    The grid layout (topbar / content / timeline) must prevent the CSS Grid
+    min-height:auto problem from pushing the timeline off-screen, and all
+    major panels must be properly placed within the grid.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import os
+        html_path = os.path.join(os.path.dirname(__file__),
+                                 '..', 'mission_control', 'static', 'index.html')
+        with open(html_path, 'r') as f:
+            cls.html = f.read()
+
+    def _css_for(self, selector):
+        """Extract CSS rule body for a given selector."""
+        import re
+        escaped = re.escape(selector)
+        m = re.search(escaped + r'\s*\{([^}]+)\}', self.html)
+        return m.group(1) if m else ''
+
+    def test_shell_grid_has_three_rows(self):
+        """The #shell grid must define exactly 3 rows: topbar, content, timeline."""
+        import re
+        m = re.search(r'grid-template-rows\s*:\s*([^;]+)', self._css_for('#shell'))
+        self.assertIsNotNone(m, "#shell must define grid-template-rows")
+        parts = m.group(1).strip().split()
+        self.assertEqual(len(parts), 3,
+            f"Grid should have 3 row tracks, got {len(parts)}: {parts}")
+
+    def test_center_panel_prevents_overflow(self):
+        """#center-panel must have min-height:0 or overflow:hidden to prevent
+        the CSS Grid min-height:auto problem from expanding the middle row
+        and pushing the timeline off-screen."""
+        css = self._css_for('#center-panel')
+        has_min_height_0 = 'min-height' in css and '0' in css
+        has_overflow_hidden = 'overflow' in css and 'hidden' in css
+        self.assertTrue(has_min_height_0 or has_overflow_hidden,
+            "#center-panel needs min-height:0 or overflow:hidden to prevent grid overflow")
+
+    def test_right_panel_prevents_overflow(self):
+        """#right-panel must constrain its height to prevent pushing the
+        timeline off-screen when advisory/gates content is tall."""
+        css = self._css_for('#right-panel')
+        has_min_height_0 = 'min-height' in css and '0' in css
+        has_overflow = 'overflow' in css
+        self.assertTrue(has_min_height_0 or has_overflow,
+            "#right-panel needs min-height:0 or overflow to prevent grid overflow")
+
+    def test_timeline_bar_has_explicit_grid_row(self):
+        """#timeline-bar must have an explicit grid-row to ensure it lands
+        in the bottom row regardless of auto-placement order."""
+        css = self._css_for('#timeline-bar')
+        self.assertIn('grid-row', css,
+            "#timeline-bar should have explicit grid-row placement")
+
+    def test_canvas_panels_have_overflow_hidden(self):
+        """Canvas panels must have overflow:hidden so canvas elements don't
+        force a minimum height on their grid track."""
+        css = self._css_for('.canvas-panel')
+        self.assertIn('overflow', css,
+            ".canvas-panel needs overflow:hidden to contain canvas sizing")
+
+    def test_all_grid_areas_present(self):
+        """All 5 grid areas must exist in the HTML: topbar, left, center, right, timeline."""
+        for panel_id in ['topbar', 'left-panel', 'center-panel', 'right-panel', 'timeline-bar']:
+            self.assertIn(f'id="{panel_id}"', self.html,
+                f"Grid area #{panel_id} must exist in the HTML")
+
+    def test_body_overflow_hidden(self):
+        """html,body must have overflow:hidden to prevent page scrolling."""
+        self.assertRegex(self.html, r'html\s*,\s*body\s*\{[^}]*overflow\s*:\s*hidden',
+            "html,body must have overflow:hidden")
+
+    def test_timeline_canvas_has_height(self):
+        """The timeline canvas must have an explicit height so it renders."""
+        css = self._css_for('#timeline-canvas')
+        self.assertIn('height', css,
+            "#timeline-canvas must have an explicit height")
+
+
+class TestUIGraphicalElements(unittest.TestCase):
+    """Tests that graphical elements (stars, globe, trajectories, axes)
+    render correctly within the viewport canvases."""
+
+    @classmethod
+    def setUpClass(cls):
+        import os
+        html_path = os.path.join(os.path.dirname(__file__),
+                                 '..', 'mission_control', 'static', 'index.html')
+        with open(html_path, 'r') as f:
+            cls.html = f.read()
+
+    def test_canvas_size_cache_retries_on_small_values(self):
+        """getCanvasSize must re-measure if cached dimensions are too small.
+        Without this, an initial layout race caches tiny values permanently,
+        causing all stars to cluster at (0,0)."""
+        import re
+        fn = re.search(r'function\s+getCanvasSize\b.*?\}', self.html, re.DOTALL)
+        self.assertIsNotNone(fn, "getCanvasSize function must exist")
+        body = fn.group(0)
+        self.assertRegex(body, r'\.w\s*<|\.h\s*<|width\s*<|height\s*<',
+            "getCanvasSize must check for small cached dimensions to force re-measure")
+
+    def test_star_positions_bounded_by_canvas(self):
+        """Star positions must be scaled to canvas bounds (W, H) so they
+        stay within the viewport regardless of canvas size."""
+        import re
+        star_section = re.search(r'Stars.*?for.*?\{(.*?)\}', self.html, re.DOTALL)
+        self.assertIsNotNone(star_section, "Star rendering loop must exist")
+        body = star_section.group(1)
+        has_w = '* W' in body or '% W' in body
+        has_h = '* H' in body or '% H' in body
+        self.assertTrue(has_w, "Star X positions must be scaled by W")
+        self.assertTrue(has_h, "Star Y positions must be scaled by H")
+
+    def test_globe_renders_kerbin_body(self):
+        """Globe must render the Kerbin circle with a gradient fill."""
+        self.assertIn('R_px', self.html, "Globe must compute R_px for Kerbin radius")
+        self.assertRegex(self.html, r'arc\(cx,\s*cy,\s*R_px',
+            "Globe must draw Kerbin as a circle arc at (cx,cy) with radius R_px")
+
+    def test_globe_renders_atmosphere_glow(self):
+        """Globe must render the atmosphere glow band at 70km."""
+        self.assertIn('atmR_px', self.html,
+            "Globe must compute atmosphere radius in pixels")
+        self.assertIn('ATM_CEIL_KM', self.html,
+            "Atmosphere radius must reference ATM_CEIL_KM constant")
+
+    def test_globe_scale_derived_from_canvas_size(self):
+        """Globe scale must be computed from canvas dimensions so the view
+        adapts to the actual canvas size, not a hardcoded value."""
+        import re
+        scale_match = re.search(r'scale\s*=.*?Math\.min\(W,\s*H\)', self.html)
+        self.assertIsNotNone(scale_match,
+            "Globe scale must use Math.min(W, H) to adapt to canvas size")
+
+    def test_trajectory_plot_has_valid_axis_padding(self):
+        """Trajectory plot must have positive padding on all four sides
+        so axis labels and data don't clip at canvas edges."""
+        import re
+        pad_match = re.search(r'pad\s*=\s*\{\s*l:\s*(\d+),\s*r:\s*(\d+),\s*t:\s*(\d+),\s*b:\s*(\d+)\s*\}', self.html)
+        self.assertIsNotNone(pad_match, "Trajectory plot must define pad {l, r, t, b}")
+        l, r, t, b = int(pad_match.group(1)), int(pad_match.group(2)), \
+                      int(pad_match.group(3)), int(pad_match.group(4))
+        self.assertGreater(l, 0, "Left padding must be positive for Y-axis labels")
+        self.assertGreater(r, 0, "Right padding must be positive")
+        self.assertGreater(t, 0, "Top padding must be positive for title")
+        self.assertGreater(b, 0, "Bottom padding must be positive for X-axis labels")
+
+    def test_all_three_canvases_exist(self):
+        """All three canvas elements must exist: globe, trajectory, timeline."""
+        for canvas_id in ['globe-canvas', 'traj-canvas', 'timeline-canvas']:
+            self.assertIn(f'id="{canvas_id}"', self.html,
+                f"Canvas #{canvas_id} must exist in the HTML")
+
+    def test_canvas_elements_fill_parent(self):
+        """Canvas elements must use width:100%;height:100% to fill their
+        parent panel, so the drawing area matches the panel size."""
+        import re
+        canvas_css = re.search(r'\.canvas-panel\s+canvas\s*\{([^}]+)\}', self.html)
+        self.assertIsNotNone(canvas_css, ".canvas-panel canvas CSS rule must exist")
+        rule = canvas_css.group(1)
+        self.assertIn('width:100%', rule, "Canvas must have width:100%")
+        self.assertIn('height:100%', rule, "Canvas must have height:100%")
+
+    def test_center_panel_does_not_clip_canvases(self):
+        """#center-panel should use min-height:0 without overflow:hidden,
+        so canvas content is never clipped by the parent grid cell."""
+        import re
+        m = re.search(r'#center-panel\s*\{([^}]+)\}', self.html)
+        self.assertIsNotNone(m, "#center-panel CSS rule must exist")
+        css = m.group(1)
+        self.assertIn('min-height', css, "#center-panel must have min-height:0")
+        self.assertNotIn('overflow', css,
+            "#center-panel should NOT have overflow:hidden — it clips canvas content")
+
+    def test_globe_renders_launch_site_marker(self):
+        """Globe must render the launch site marker at (0, 0)."""
+        self.assertIn('toXY(0, 0)', self.html,
+            "Globe must render launch site marker at downrange=0, altitude=0")
+
+    def test_globe_renders_vehicle_position_marker(self):
+        """Globe must render the current vehicle position as a marker dot."""
+        import re
+        marker = re.search(r'#69f0ae.*fill|fill.*#69f0ae', self.html)
+        self.assertIsNotNone(marker,
+            "Globe must render vehicle position marker (green #69f0ae dot)")
+
+    def test_star_positions_not_regularly_spaced(self):
+        """Star rendering must use a hash function that avoids visible rows.
+        Simple linear congruential ((i * A + B) % W) produces equally-spaced
+        rows at common canvas widths; a proper hash must be used instead."""
+        import re
+        star_section = re.search(r'// Stars.*?for\s*\(.*?\{(.*?)\}', self.html, re.DOTALL)
+        self.assertIsNotNone(star_section, "Star rendering loop must exist")
+        body = star_section.group(1)
+        self.assertNotRegex(body, r'\(\s*i\s*\*\s*\d+\s*\+\s*\d+\s*\)\s*%\s*W',
+            "Star X must not use simple ((i * A + B) % W) — it produces visible rows")
+
+    def test_star_hash_uses_nonlinear_distribution(self):
+        """Star position generation must use a nonlinear hash (e.g., bit mixing,
+        sine hash, or xorshift) to produce visually random distribution."""
+        import re
+        star_section = re.search(r'// Stars.*?for\s*\(.*?\{(.*?)\}', self.html, re.DOTALL)
+        self.assertIsNotNone(star_section, "Star rendering loop must exist")
+        body = star_section.group(1)
+        has_hash_fn = ('hash' in body.lower() or 'seed' in body.lower() or
+                       'Math.sin' in body or '>>>' in body or '^' in body or
+                       '0x' in body)
+        self.assertTrue(has_hash_fn,
+            "Star positions should use a hash function (bit mixing, sine hash, etc.) "
+            "instead of linear arithmetic")
+
+
+class TestUITimelinePhaseBands(unittest.TestCase):
+    """Tests that timeline phase bands derive from actual trajectory data
+    rather than using hardcoded transition times that can drift from the sim."""
+
+    @classmethod
+    def setUpClass(cls):
+        import os
+        html_path = os.path.join(os.path.dirname(__file__),
+                                 '..', 'mission_control', 'static', 'index.html')
+        with open(html_path, 'r') as f:
+            cls.html = f.read()
+
+    def test_phase_bands_derived_from_nominal_data(self):
+        """Timeline phase bands must be derived from nominalTraj data,
+        not hardcoded with fixed start/end times."""
+        import re
+        bands_section = re.search(r'(Phase bands|bands).*?forEach', self.html, re.DOTALL)
+        self.assertIsNotNone(bands_section, "Phase band drawing code must exist")
+        section = bands_section.group(0)
+        has_dynamic = ('nominalTraj' in section or 'buildPhaseBands' in section or
+                       'phaseBands' in section or 'computeBands' in section or
+                       'deriveBands' in section)
+        self.assertTrue(has_dynamic,
+            "Phase bands should reference nominalTraj or a derived band computation, "
+            "not use hardcoded start/end times")
+
+    def test_phase_bands_include_coast_apo(self):
+        """Phase bands should distinguish COAST_APO from other coast phases."""
+        import re
+        bands = re.findall(r"label:\s*'([^']+)'", self.html)
+        coast_labels = [b for b in bands if 'COAST' in b.upper() or 'APO' in b.upper()]
+        self.assertTrue(len(coast_labels) > 0,
+            "Timeline should have a coast-to-apoapsis phase band")
+
+    def test_no_hardcoded_terrier_end_time(self):
+        """The Terrier phase band must not have a hardcoded end time like 290.
+        The actual TERRIER→COAST_APO transition is at ~T+216.5s."""
+        import re
+        bands_match = re.findall(r"label:\s*'TERRIER'[^}]*end:\s*(\d+)", self.html)
+        for end_val in bands_match:
+            self.assertNotEqual(int(end_val), 290,
+                "Terrier band end=290 is wrong (actual transition ~216.5s). "
+                "Bands should derive from trajectory data.")
+
+    def test_band_builder_function_exists(self):
+        """A function must exist that computes phase bands from trajectory data,
+        so bands update when a new scenario is loaded."""
+        self.assertRegex(self.html, r'function\s+(buildPhaseBands|computePhaseBands|derivePhaseBands)',
+            "A function to compute phase bands from trajectory data must exist")
+
+    def test_phase_band_colors_defined(self):
+        """Each phase should have a distinct band color for visual differentiation."""
+        import re
+        color_map = re.search(r'(PHASE_COLORS|phaseColors|bandColors)\s*=\s*\{', self.html)
+        has_color_in_bands = len(re.findall(r"color:\s*'rgba", self.html)) >= 5
+        self.assertTrue(color_map is not None or has_color_in_bands,
+            "Phase band colors must be defined for at least 5 phases")
+
+    def test_phase_bands_update_on_scenario_load(self):
+        """When a new scenario loads (and new nominalTraj arrives), phase bands
+        must be recomputed, not remain stale from the previous scenario."""
+        import re
+        on_nominal = re.search(r"socket\.on\('nominal'", self.html, re.DOTALL)
+        self.assertIsNotNone(on_nominal, "Socket handler for 'nominal' event must exist")
+        nominal_handler_start = on_nominal.start()
+        handler_section = self.html[nominal_handler_start:nominal_handler_start + 500]
+        has_band_rebuild = ('buildPhaseBands' in handler_section or
+                           'computePhaseBands' in handler_section or
+                           'derivePhaseBands' in handler_section or
+                           'phaseBands' in handler_section)
+        self.assertTrue(has_band_rebuild,
+            "The 'nominal' socket handler must rebuild phase bands when new trajectory data arrives")
+
+
+# ---------------------------------------------------------------------------
+# Phase 6: Telemachus integration — expanded topics, per-stage dV, live data
+# ---------------------------------------------------------------------------
+
+class TestTelematicusTopics(unittest.TestCase):
+    """Verify that SUBSCRIBED_TOPICS and FIELD_MAP cover the Telemachus-1 schema."""
+
+    def test_subscribed_topics_include_vessel_data(self):
+        from mission_control.telemachus_client import SUBSCRIBED_TOPICS
+        required = [
+            "v.altitude", "v.speed", "v.verticalSpeed", "v.surfaceSpeed",
+            "v.mass", "v.geeForce", "v.mach", "v.dynamicPressurekPa",
+            "v.atmosphericDensity", "v.lat", "v.long", "v.currentStage",
+        ]
+        for t in required:
+            self.assertIn(t, SUBSCRIBED_TOPICS, f"Missing topic: {t}")
+
+    def test_subscribed_topics_include_orbital_data(self):
+        from mission_control.telemachus_client import SUBSCRIBED_TOPICS
+        required = [
+            "o.ApA", "o.PeA", "o.inclination", "o.eccentricity",
+            "o.sma", "o.period", "o.timeToAp", "o.timeToPe",
+        ]
+        for t in required:
+            self.assertIn(t, SUBSCRIBED_TOPICS, f"Missing topic: {t}")
+
+    def test_subscribed_topics_include_dv_totals(self):
+        from mission_control.telemachus_client import SUBSCRIBED_TOPICS
+        required = [
+            "dv.ready", "dv.stageCount", "dv.totalDVVac",
+            "dv.totalDVASL", "dv.totalDVActual", "dv.totalBurnTime",
+        ]
+        for t in required:
+            self.assertIn(t, SUBSCRIBED_TOPICS, f"Missing dV topic: {t}")
+
+    def test_subscribed_topics_include_resource_maxes(self):
+        from mission_control.telemachus_client import SUBSCRIBED_TOPICS
+        required = [
+            "r.resource[LiquidFuel]", "r.resource[SolidFuel]",
+            "r.resource[Oxidizer]", "r.resource[ElectricCharge]",
+            "r.resourceMax[LiquidFuel]", "r.resourceMax[SolidFuel]",
+            "r.resourceMax[Oxidizer]", "r.resourceMax[ElectricCharge]",
+        ]
+        for t in required:
+            self.assertIn(t, SUBSCRIBED_TOPICS, f"Missing resource topic: {t}")
+
+    def test_subscribed_topics_include_current_stage_resources(self):
+        from mission_control.telemachus_client import SUBSCRIBED_TOPICS
+        required = [
+            "r.resourceCurrent[LiquidFuel]", "r.resourceCurrent[SolidFuel]",
+            "r.resourceCurrent[Oxidizer]",
+            "r.resourceCurrentMax[LiquidFuel]", "r.resourceCurrentMax[SolidFuel]",
+            "r.resourceCurrentMax[Oxidizer]",
+        ]
+        for t in required:
+            self.assertIn(t, SUBSCRIBED_TOPICS, f"Missing stage resource topic: {t}")
+
+    def test_field_map_covers_all_subscribed_topics(self):
+        from mission_control.telemachus_client import SUBSCRIBED_TOPICS, FIELD_MAP
+        for topic in SUBSCRIBED_TOPICS:
+            self.assertIn(topic, FIELD_MAP,
+                f"SUBSCRIBED_TOPICS has '{topic}' but FIELD_MAP does not map it")
+
+    def test_field_map_has_no_duplicate_keys(self):
+        from mission_control.telemachus_client import FIELD_MAP
+        values = list(FIELD_MAP.values())
+        dupes = [v for v in values if values.count(v) > 1]
+        self.assertEqual(len(dupes), 0,
+            f"FIELD_MAP has duplicate internal keys: {set(dupes)}")
+
+    def test_stage_dv_topics_template_list(self):
+        from mission_control.telemachus_client import STAGE_DV_TOPICS
+        self.assertIn("dv.stageDVVac", STAGE_DV_TOPICS)
+        self.assertIn("dv.stageFuelMass", STAGE_DV_TOPICS)
+        self.assertIn("dv.stageBurnTime", STAGE_DV_TOPICS)
+        self.assertIn("dv.stageMass", STAGE_DV_TOPICS)
+        self.assertIn("dv.stageDryMass", STAGE_DV_TOPICS)
+        self.assertTrue(len(STAGE_DV_TOPICS) >= 15,
+            "Should have at least 15 per-stage topic templates")
+
+
+class TestTelematicusClientStages(unittest.TestCase):
+    """Verify TelematicusClient builds per-stage data from dV topics."""
+
+    def test_rebuild_stages_from_state(self):
+        from mission_control.telemachus_client import TelematicusClient
+        client = TelematicusClient.__new__(TelematicusClient)
+        client._state = {"dv_stage_count": 2}
+        client._stage_field_map = {}
+        client._lock = __import__('threading').Lock()
+
+        client._state["stage_0_dvvac"] = 1500.0
+        client._state["stage_0_fuelmass"] = 2.0
+        client._state["stage_0_drymass"] = 1.0
+        client._state["stage_1_dvvac"] = 3000.0
+        client._state["stage_1_fuelmass"] = 4.0
+        client._state["stage_1_drymass"] = 2.0
+
+        with client._lock:
+            client._rebuild_stages_locked()
+
+        stages = client._state["stages"]
+        self.assertEqual(len(stages), 2)
+        self.assertEqual(stages[0]["dv_vac"], 1500.0)
+        self.assertEqual(stages[0]["fuel_mass"], 2.0)
+        self.assertEqual(stages[1]["dv_vac"], 3000.0)
+        self.assertEqual(stages[1]["fuel_mass"], 4.0)
+
+    def test_rebuild_stages_skips_empty(self):
+        from mission_control.telemachus_client import TelematicusClient
+        client = TelematicusClient.__new__(TelematicusClient)
+        client._state = {"dv_stage_count": 3}
+        client._stage_field_map = {}
+        client._lock = __import__('threading').Lock()
+
+        client._state["stage_0_dvvac"] = 500.0
+        client._state["stage_0_fuelmass"] = 1.0
+        # stage 1 has no data at all
+        client._state["stage_2_dvvac"] = 800.0
+        client._state["stage_2_fuelmass"] = 0.5
+
+        with client._lock:
+            client._rebuild_stages_locked()
+
+        stages = client._state["stages"]
+        self.assertEqual(len(stages), 2)
+        self.assertEqual(stages[0]["index"], 0)
+        self.assertEqual(stages[1]["index"], 2)
+
+    def test_rebuild_stages_no_count(self):
+        from mission_control.telemachus_client import TelematicusClient
+        client = TelematicusClient.__new__(TelematicusClient)
+        client._state = {}
+        client._stage_field_map = {}
+        client._lock = __import__('threading').Lock()
+
+        with client._lock:
+            client._rebuild_stages_locked()
+        self.assertNotIn("stages", client._state)
+
+
+class TestSimulatedTelemetryStages(unittest.TestCase):
+    """Verify SimulatedTelemetry includes stages and live resource maxes."""
+
+    def test_state_includes_stages_array(self):
+        from mission_control.telemachus_client import SimulatedTelemetry
+        client = SimulatedTelemetry(rate_ms=200)
+        client.start()
+        time.sleep(1.0)
+        state = client.get_state()
+        client.stop()
+        self.assertIn("stages", state)
+        self.assertIsInstance(state["stages"], list)
+        self.assertTrue(len(state["stages"]) > 0,
+            "SimulatedTelemetry should report at least one stage with dV")
+
+    def test_state_includes_resource_maxes(self):
+        from mission_control.telemachus_client import SimulatedTelemetry
+        client = SimulatedTelemetry(rate_ms=200)
+        client.start()
+        time.sleep(1.0)
+        state = client.get_state()
+        client.stop()
+        self.assertIn("liquid_fuel_max", state)
+        self.assertIn("solid_fuel_max", state)
+        self.assertGreater(state["liquid_fuel_max"], 0)
+        self.assertGreater(state["solid_fuel_max"], 0)
+
+    def test_state_includes_mass_and_forces(self):
+        from mission_control.telemachus_client import SimulatedTelemetry
+        client = SimulatedTelemetry(rate_ms=200)
+        client.start()
+        time.sleep(1.0)
+        state = client.get_state()
+        client.stop()
+        self.assertIn("mass", state)
+        self.assertIn("mach", state)
+        self.assertIn("dynamic_pressure", state)
+
+    def test_stages_have_dv_and_fuel_data(self):
+        from mission_control.telemachus_client import SimulatedTelemetry
+        client = SimulatedTelemetry(rate_ms=200)
+        client.start()
+        time.sleep(1.0)
+        state = client.get_state()
+        client.stop()
+        for stg in state["stages"]:
+            self.assertIn("dv_vac", stg)
+            self.assertIn("fuel_mass", stg)
+            self.assertIn("label", stg)
+            self.assertIsNotNone(stg["dv_vac"])
+            self.assertIsNotNone(stg["fuel_mass"])
+
+    def test_no_hardcoded_fuel_maxes_in_html(self):
+        """The UI must use telemetry-provided fuel maxes, not hardcoded 360/160."""
+        html_path = os.path.join(ROOT, 'mission_control', 'static', 'index.html')
+        with open(html_path) as f:
+            html = f.read()
+        import re
+        matches = re.findall(r'lfMax\s*=\s*360|sfMax\s*=\s*160', html)
+        self.assertEqual(len(matches), 0,
+            f"Found hardcoded fuel maxes in HTML: {matches}. "
+            "Use s.liquid_fuel_max / s.solid_fuel_max from telemetry instead.")
+
+
+class TestScriptedTelemetryStages(unittest.TestCase):
+    """Verify ScriptedTelemetry includes stages and live resource maxes."""
+
+    def test_state_includes_stages_array(self):
+        from mission_control.telemachus_client import ScriptedTelemetry
+        from mission_control.scenario import LaunchScenario
+        client = ScriptedTelemetry(rate_ms=200)
+        client.load_scenario(LaunchScenario())
+        client.start()
+        time.sleep(1.0)
+        state = client.get_state()
+        client.stop()
+        self.assertIn("stages", state)
+        self.assertIsInstance(state["stages"], list)
+        self.assertTrue(len(state["stages"]) > 0)
+
+    def test_state_includes_resource_maxes(self):
+        from mission_control.telemachus_client import ScriptedTelemetry
+        from mission_control.scenario import LaunchScenario
+        client = ScriptedTelemetry(rate_ms=200)
+        client.load_scenario(LaunchScenario())
+        client.start()
+        time.sleep(1.0)
+        state = client.get_state()
+        client.stop()
+        self.assertIn("liquid_fuel_max", state)
+        self.assertIn("solid_fuel_max", state)
+        self.assertGreater(state["liquid_fuel_max"], 0)
+
+    def test_state_includes_mass(self):
+        from mission_control.telemachus_client import ScriptedTelemetry
+        from mission_control.scenario import LaunchScenario
+        client = ScriptedTelemetry(rate_ms=200)
+        client.load_scenario(LaunchScenario())
+        client.start()
+        time.sleep(1.0)
+        state = client.get_state()
+        client.stop()
+        self.assertIn("mass", state)
+        self.assertIsNotNone(state["mass"])
+        self.assertGreater(state["mass"], 0)
+
+
+class TestStageDVAccuracy(unittest.TestCase):
+    """Verify that stage dV/fuel levels are physically accurate across all phases.
+
+    Key invariants:
+    - Fuel that isn't burning should not decrease
+    - Fuel that IS burning should decrease monotonically
+    - dV should track fuel depletion proportionally
+    - Stage entries should appear/disappear at correct phase transitions
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from sim import run_ascent, VehicleConfig
+        cls.result = run_ascent()
+        cls.pts = cls.result.points
+        cls.cfg = VehicleConfig()
+
+    def _get_points_for_phase(self, phase):
+        return [p for p in self.pts if p.phase == phase]
+
+    def _build_stages(self, elapsed):
+        from mission_control.telemachus_client import SimulatedTelemetry
+        s = SimulatedTelemetry.__new__(SimulatedTelemetry)
+        timing = s._extract_stage_timing(self.pts)
+        return s._build_sim_stages(elapsed, timing)
+
+    def _find_stage(self, stages, label):
+        for s in stages:
+            if s["label"] == label:
+                return s
+        return None
+
+    def test_terrier_dv_constant_during_boost(self):
+        """Terrier fuel is untouched during BOOST — its dV must not decrease."""
+        boost_pts = self._get_points_for_phase("BOOST")
+        self.assertTrue(len(boost_pts) > 5)
+        terrier_dvs = []
+        for p in boost_pts:
+            stages = self._build_stages(p.t)
+            t = self._find_stage(stages, "Stage 2")
+            if t:
+                terrier_dvs.append(t["dv_vac"])
+        self.assertTrue(len(terrier_dvs) > 5)
+        self.assertAlmostEqual(terrier_dvs[0], terrier_dvs[-1], delta=1.0,
+            msg=f"Terrier dV changed during BOOST: {terrier_dvs[0]:.1f} → {terrier_dvs[-1]:.1f}")
+
+    def test_terrier_dv_constant_during_core(self):
+        """Terrier fuel is untouched during CORE — its dV must not decrease."""
+        core_pts = self._get_points_for_phase("CORE")
+        self.assertTrue(len(core_pts) > 5)
+        terrier_dvs = []
+        for p in core_pts:
+            stages = self._build_stages(p.t)
+            t = self._find_stage(stages, "Stage 2")
+            if t:
+                terrier_dvs.append(t["dv_vac"])
+        self.assertTrue(len(terrier_dvs) > 5)
+        self.assertAlmostEqual(terrier_dvs[0], terrier_dvs[-1], delta=1.0,
+            msg=f"Terrier dV changed during CORE: {terrier_dvs[0]:.1f} → {terrier_dvs[-1]:.1f}")
+
+    def test_terrier_dv_constant_during_coast(self):
+        """Terrier isn't burning during COAST_APO — its dV must stay constant."""
+        coast_pts = self._get_points_for_phase("COAST_APO")
+        if not coast_pts:
+            self.skipTest("No COAST_APO phase in trajectory")
+        terrier_dvs = []
+        for p in coast_pts:
+            stages = self._build_stages(p.t)
+            t = self._find_stage(stages, "Stage 2")
+            if t:
+                terrier_dvs.append(t["dv_vac"])
+        self.assertTrue(len(terrier_dvs) > 2)
+        self.assertAlmostEqual(terrier_dvs[0], terrier_dvs[-1], delta=1.0,
+            msg=f"Terrier dV changed during COAST_APO: {terrier_dvs[0]:.1f} → {terrier_dvs[-1]:.1f}")
+
+    def test_terrier_dv_decreases_during_terrier_burn(self):
+        """Terrier dV should decrease monotonically during TERRIER phase."""
+        terrier_pts = self._get_points_for_phase("TERRIER")
+        self.assertTrue(len(terrier_pts) > 10)
+        terrier_dvs = []
+        for p in terrier_pts:
+            stages = self._build_stages(p.t)
+            t = self._find_stage(stages, "Stage 2")
+            if t:
+                terrier_dvs.append(t["dv_vac"])
+        self.assertTrue(terrier_dvs[0] > terrier_dvs[-1],
+            msg="Terrier dV should decrease during burn")
+        for i in range(1, len(terrier_dvs)):
+            self.assertLessEqual(terrier_dvs[i], terrier_dvs[i-1] + 0.1,
+                msg=f"Terrier dV increased at step {i}: {terrier_dvs[i-1]:.1f} → {terrier_dvs[i]:.1f}")
+
+    def test_terrier_starts_near_full_dv(self):
+        """At T+0, Terrier should report close to its full 3458 m/s dV."""
+        stages = self._build_stages(0.0)
+        t = self._find_stage(stages, "Stage 2")
+        self.assertIsNotNone(t, "Terrier stage should exist at T+0")
+        self.assertAlmostEqual(t["dv_vac"], 3458.0, delta=50,
+            msg=f"Terrier dV at T+0 should be ~3458, got {t['dv_vac']:.1f}")
+
+    def test_core_dv_decreases_during_boost(self):
+        """Core stage burns from liftoff — its dV should decrease during BOOST."""
+        boost_pts = self._get_points_for_phase("BOOST")
+        core_dvs = []
+        for p in boost_pts:
+            stages = self._build_stages(p.t)
+            c = self._find_stage(stages, "Stage 1")
+            if c:
+                core_dvs.append(c["dv_vac"])
+        self.assertTrue(len(core_dvs) > 5)
+        self.assertGreater(core_dvs[0], core_dvs[-1],
+            msg="Core dV should decrease during BOOST as the Swivel burns")
+
+    def test_core_dv_decreases_during_core(self):
+        """Core dV should continue decreasing during CORE phase."""
+        core_pts = self._get_points_for_phase("CORE")
+        core_dvs = []
+        for p in core_pts:
+            stages = self._build_stages(p.t)
+            c = self._find_stage(stages, "Stage 1")
+            if c:
+                core_dvs.append(c["dv_vac"])
+        self.assertTrue(len(core_dvs) > 5)
+        self.assertGreater(core_dvs[0], core_dvs[-1],
+            msg="Core dV should decrease during CORE phase")
+
+    def test_srb_dv_decreases_during_boost(self):
+        """SRB dV should decrease monotonically during BOOST."""
+        boost_pts = self._get_points_for_phase("BOOST")
+        srb_dvs = []
+        for p in boost_pts:
+            stages = self._build_stages(p.t)
+            s = self._find_stage(stages, "Stage 0")
+            if s:
+                srb_dvs.append(s["dv_vac"])
+        self.assertTrue(len(srb_dvs) > 5)
+        self.assertGreater(srb_dvs[0], srb_dvs[-1],
+            msg="SRB dV should decrease during BOOST")
+        self.assertAlmostEqual(srb_dvs[0], 222.0, delta=10,
+            msg="SRB dV at start should be near 222 m/s")
+
+    def test_srb_depleted_after_boost(self):
+        """SRB stage should have status 'depleted' after booster sep."""
+        core_pts = self._get_points_for_phase("CORE")
+        for p in core_pts[:3]:
+            stages = self._build_stages(p.t)
+            s = self._find_stage(stages, "Stage 0")
+            self.assertIsNotNone(s, "Stage 0 should always be present")
+            self.assertEqual(s["status"], "depleted",
+                msg=f"Stage 0 should be depleted during CORE at t={p.t:.1f}")
+            self.assertAlmostEqual(s["dv_vac"], 0.0, delta=0.1)
+
+    def test_core_depleted_after_core_phase(self):
+        """Core stage should have status 'depleted' during TERRIER phase."""
+        terrier_pts = self._get_points_for_phase("TERRIER")
+        for p in terrier_pts[:3]:
+            stages = self._build_stages(p.t)
+            c = self._find_stage(stages, "Stage 1")
+            self.assertIsNotNone(c, "Stage 1 should always be present")
+            self.assertEqual(c["status"], "depleted",
+                msg=f"Stage 1 should be depleted during TERRIER at t={p.t:.1f}")
+            self.assertAlmostEqual(c["dv_vac"], 0.0, delta=0.1)
+
+    def test_all_stages_always_present(self):
+        """All 3 stages should be present at every point in the flight."""
+        for p in self.pts[::10]:
+            stages = self._build_stages(p.t)
+            self.assertEqual(len(stages), 3, f"Should have 3 stages at t={p.t:.1f}")
+            labels = [s["label"] for s in stages]
+            self.assertEqual(labels, ["Stage 0", "Stage 1", "Stage 2"])
+
+    def test_stages_have_dv_initial(self):
+        """Every stage should have a dv_initial field for bar scaling."""
+        stages = self._build_stages(0.0)
+        for s in stages:
+            self.assertIn("dv_initial", s, f"Stage {s['label']} missing dv_initial")
+            self.assertGreater(s["dv_initial"], 0)
+
+    def test_stages_have_status(self):
+        """Every stage should have a status field."""
+        stages = self._build_stages(0.0)
+        for s in stages:
+            self.assertIn("status", s)
+            self.assertIn(s["status"], ("pending", "active", "depleted"))
+
+
+class TestScriptedStageDVAccuracy(unittest.TestCase):
+    """Verify ScriptedTelemetry stage dV/fuel accuracy (same invariants)."""
+
+    @classmethod
+    def setUpClass(cls):
+        from sim import run_ascent, VehicleConfig
+        from mission_control.scenario import LaunchScenario
+        from mission_control.telemachus_client import SimulatedTelemetry
+        cls.scenario = LaunchScenario()
+        cls.cfg = cls.scenario.to_vehicle_config()
+        cls.result = run_ascent(cls.cfg, cls.scenario.get_pitch_program())
+        cls.pts = cls.result.points
+        cls.timing = SimulatedTelemetry._extract_stage_timing(cls.pts)
+
+    def _build_stages(self, elapsed):
+        from mission_control.telemachus_client import ScriptedTelemetry
+        s = ScriptedTelemetry.__new__(ScriptedTelemetry)
+        s._vehicle_cfg = self.cfg
+        s._scenario = self.scenario
+        return s._build_scripted_stages(elapsed, self.timing)
+
+    def _find_stage(self, stages, label):
+        for s in stages:
+            if s["label"] == label:
+                return s
+        return None
+
+    def test_terrier_dv_constant_during_boost(self):
+        """Terrier fuel untouched during BOOST — dV must be constant."""
+        boost_pts = [p for p in self.pts if p.phase == "BOOST"]
+        terrier_dvs = []
+        for p in boost_pts:
+            stages = self._build_stages(p.t)
+            t = self._find_stage(stages, "Stage 2")
+            if t:
+                terrier_dvs.append(t["dv_vac"])
+        self.assertTrue(len(terrier_dvs) > 5)
+        self.assertAlmostEqual(terrier_dvs[0], terrier_dvs[-1], delta=1.0,
+            msg=f"Terrier dV changed during BOOST: {terrier_dvs[0]:.1f} → {terrier_dvs[-1]:.1f}")
+
+    def test_terrier_dv_constant_during_core(self):
+        """Terrier fuel untouched during CORE — dV must be constant."""
+        core_pts = [p for p in self.pts if p.phase == "CORE"]
+        terrier_dvs = []
+        for p in core_pts:
+            stages = self._build_stages(p.t)
+            t = self._find_stage(stages, "Stage 2")
+            if t:
+                terrier_dvs.append(t["dv_vac"])
+        self.assertTrue(len(terrier_dvs) > 5)
+        self.assertAlmostEqual(terrier_dvs[0], terrier_dvs[-1], delta=1.0,
+            msg=f"Terrier dV changed during CORE: {terrier_dvs[0]:.1f} → {terrier_dvs[-1]:.1f}")
+
+    def test_terrier_dv_decreases_during_terrier_burn(self):
+        """Terrier dV should decrease during TERRIER phase."""
+        terrier_pts = [p for p in self.pts if p.phase == "TERRIER"]
+        terrier_dvs = []
+        for p in terrier_pts:
+            stages = self._build_stages(p.t)
+            t = self._find_stage(stages, "Stage 2")
+            if t:
+                terrier_dvs.append(t["dv_vac"])
+        self.assertTrue(terrier_dvs[0] > terrier_dvs[-1])
+
+    def test_terrier_dv_constant_during_coast(self):
+        """Terrier dV should not change during COAST_APO."""
+        coast_pts = [p for p in self.pts if p.phase == "COAST_APO"]
+        if not coast_pts:
+            self.skipTest("No COAST_APO phase")
+        terrier_dvs = []
+        for p in coast_pts:
+            stages = self._build_stages(p.t)
+            t = self._find_stage(stages, "Stage 2")
+            if t:
+                terrier_dvs.append(t["dv_vac"])
+        self.assertTrue(len(terrier_dvs) > 2)
+        self.assertAlmostEqual(terrier_dvs[0], terrier_dvs[-1], delta=1.0)
+
+
+class TestUIStageBarElements(unittest.TestCase):
+    """Verify the HTML contains dynamic per-stage dV bar elements and logic."""
+
+    @classmethod
+    def setUpClass(cls):
+        html_path = os.path.join(ROOT, 'mission_control', 'static', 'index.html')
+        with open(html_path) as f:
+            cls.html = f.read()
+
+    def test_stage_dv_section_exists(self):
+        self.assertIn('id="stage-dv-section"', self.html)
+        self.assertIn('id="stage-dv-bars"', self.html)
+
+    def test_update_stage_dv_bars_function(self):
+        self.assertIn('function updateStageDVBars', self.html)
+
+    def test_stage_dv_bars_called_from_telemetry_update(self):
+        self.assertIn('updateStageDVBars', self.html)
+        import re
+        calls = re.findall(r'updateStageDVBars\(', self.html)
+        self.assertTrue(len(calls) >= 1,
+            "updateStageDVBars should be called from updateTelemetryPanel")
+
+    def test_uses_stages_from_state(self):
+        self.assertIn('s.stages', self.html,
+            "UI must reference s.stages from telemetry state for dV bars")
+
+    def test_fuel_max_from_telemetry(self):
+        self.assertIn('s.liquid_fuel_max', self.html,
+            "UI must use s.liquid_fuel_max from telemetry state")
+        self.assertIn('s.solid_fuel_max', self.html,
+            "UI must use s.solid_fuel_max from telemetry state")
+
+    def test_vessel_section_exists(self):
+        self.assertIn('id="vessel-section"', self.html)
+        self.assertIn('id="t-mass"', self.html)
+        self.assertIn('id="t-gforce"', self.html)
+        self.assertIn('id="t-mach"', self.html)
+        self.assertIn('id="t-dynp"', self.html)
+
+    def test_orbit_time_fields_exist(self):
+        self.assertIn('id="t-tta"', self.html)
+        self.assertIn('id="t-ttp"', self.html)
 
 
 if __name__ == "__main__":

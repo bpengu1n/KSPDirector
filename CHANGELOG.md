@@ -14,20 +14,27 @@
 - **Atmospheric drag model**: Exponential atmosphere with quadratic drag using scenario `cd`/`area_base` for both trajectory sim and ballistic projection.
 - **Constants API endpoint**: `/api/constants` serves Kerbin physics constants to eliminate JS/Python duplication.
 - **CI workflow**: GitHub Actions runs the full regression suite on every push and PR to `main` (Python 3.10/3.11/3.12).
-- **52 new scenario tests**: Full coverage of LaunchScenario model, ScriptedTelemetry playback, scenario API routes, and FlightDirector integration.
+- **69 new scenario tests**: Full coverage of LaunchScenario model, ScriptedTelemetry playback, scenario API routes, FlightDirector integration, and stage dV accuracy invariants.
 - **34 ballistic projection tests**: Boundary-value, termination, drag, and numerical cross-validation tests.
 
 ### Changed
 - Trajectory integrator `t_max` increased from 400s to 600s to accommodate full orbital insertion.
 - Telemetry throttle mapping now includes TERRIER and CIRCULARIZE as powered phases.
-- Liquid fuel telemetry models both core stage and mission stage FL-T800 tanks separately.
+- Stage dV bars now use time-based fuel depletion from trajectory phase transitions instead of mass-based estimation. Bar fill shows `dv_remaining / dv_initial` instead of `fuel_mass / total_mass`.
+- All 3 stages (Stage 0, Stage 1, Stage 2) always visible with status indicators (active/pending/depleted). Depleted stages dimmed, pending stages subdued.
+- Stage labels use sequential numbering (Stage 0/1/2) instead of engine names for consistency across vehicle configurations.
 - `TrajectoryPoint.phase` field expanded: BOOST, CORE, TERRIER, COAST_APO, CIRCULARIZE, ORBIT, COAST.
 - Server uses session context pattern instead of bare globals.
 - Import structure cleaned up (no more `sys.path` manipulation).
+- Telemachus topic list verified against TeaGuild/Telemachus-1 source; added `telemachus_schema.json` reference.
 
 ### Fixed
+- **Stage dV accuracy**: Terrier dV no longer erroneously decreases during BOOST/CORE phases. Root cause was mass-based fuel estimation conflating two independent FL-T800 tanks (core vs mission stage).
+- **Core stage dV**: Core (Swivel) dV now correctly decreases from liftoff through core burnout, matching the Swivel burning during both BOOST and CORE.
 - Suborbital trajectory no longer stops at core burnout (T+61s) — continues through Terrier burn to orbit.
 - Gamma clamping bug that prevented descent during coast phases.
+- Timeline phase bands now derived dynamically from nominal trajectory data instead of hardcoded times that drifted from the sim (TERRIER ending at 290s instead of actual ~217s, CIRC starting at 420s instead of ~472s).
+- Star rendering replaced linear congruential formula with sine hash to eliminate visible row patterns at common canvas sizes.
 - Service bay double-count in fuel inspection test (source inspection updated for refactored method).
 
 ## [1.0.0] — 2026-06-24

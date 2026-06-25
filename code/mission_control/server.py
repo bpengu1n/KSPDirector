@@ -181,6 +181,8 @@ def api_scenarios():
 @app.route("/api/scenario/load", methods=["POST"])
 def api_scenario_load():
     data = request.get_json(force=True)
+    if not data or not isinstance(data, dict):
+        return jsonify({"error": "Invalid JSON body"}), 400
 
     if "preset" in data:
         scenario = PRESET_SCENARIOS.get(data["preset"])
@@ -328,7 +330,8 @@ def on_playback_control(data):
         session.telemetry_client.reset()
     elif action == "speed":
         speed = data.get("speed", 1.0)
-        session.telemetry_client.set_speed(speed)
+        if isinstance(speed, (int, float)) and 0.25 <= speed <= 10.0:
+            session.telemetry_client.set_speed(speed)
 
 
 # ---------------------------------------------------------------------------
@@ -435,7 +438,6 @@ def main(argv=None):
         scripted.load_scenario(scenario)
         session.telemetry_client = scripted
         session.current_scenario = scenario
-        session.telemetry_client.start()
     elif args.ksp_host:
         logger.info("Connecting to KSP/Telemachus at %s:%d …",
                      args.ksp_host, args.ksp_port)
