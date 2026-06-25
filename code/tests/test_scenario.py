@@ -1391,6 +1391,57 @@ class TestTelematicusClientStages(unittest.TestCase):
         self.assertNotIn("stages", client._state)
 
 
+class TestVHorizDerivation(unittest.TestCase):
+    """P-TELEM-03: v_horiz must be derived from surface_speed and v_vert,
+    not mapped directly from v.surfaceSpeed."""
+
+    def _make_client(self):
+        import threading
+        from mission_control.telemachus_client import TelematicusClient, EMPTY_STATE
+        client = TelematicusClient.__new__(TelematicusClient)
+        client._state = dict(EMPTY_STATE)
+        client._stage_field_map = {}
+        client._lock = threading.Lock()
+        client._trajectory_lock = threading.Lock()
+        client._trajectory = []
+        client._launch_lon = None
+        client.on_update = None
+        return client
+
+    def test_field_map_maps_surface_speed_not_v_horiz(self):
+        from mission_control.telemachus_client import FIELD_MAP
+        self.assertEqual(FIELD_MAP["v.surfaceSpeed"], "surface_speed")
+        self.assertNotIn("v_horiz", FIELD_MAP.values())
+
+    def test_v_horiz_derived_from_surface_speed_and_v_vert(self):
+        import json, math
+        client = self._make_client()
+        msg = json.dumps({"v.surfaceSpeed": 500.0, "v.verticalSpeed": 300.0})
+        client._handle_message(msg)
+        state = client.get_state()
+        expected = math.sqrt(500**2 - 300**2)
+        self.assertAlmostEqual(state["v_horiz"], expected, places=5)
+
+    def test_v_horiz_pure_horizontal(self):
+        import json
+        client = self._make_client()
+        msg = json.dumps({"v.surfaceSpeed": 1000.0, "v.verticalSpeed": 0.0})
+        client._handle_message(msg)
+        self.assertAlmostEqual(client.get_state()["v_horiz"], 1000.0, places=5)
+
+    def test_v_horiz_pure_vertical(self):
+        import json
+        client = self._make_client()
+        msg = json.dumps({"v.surfaceSpeed": 200.0, "v.verticalSpeed": 200.0})
+        client._handle_message(msg)
+        self.assertAlmostEqual(client.get_state()["v_horiz"], 0.0, places=3)
+
+    def test_v_horiz_in_empty_state(self):
+        from mission_control.telemachus_client import EMPTY_STATE
+        self.assertIn("v_horiz", EMPTY_STATE)
+        self.assertIn("surface_speed", EMPTY_STATE)
+
+
 class TestSimulatedTelemetryStages(unittest.TestCase):
     """Verify SimulatedTelemetry includes stages and live resource maxes."""
 

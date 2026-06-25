@@ -130,7 +130,7 @@ If you change any part mass or engine stat, re-run and update this table.
 | Target orbit | 80 × 80 km | design |
 | Orbital speed @80km | 2,279 m/s | derived |
 | TMI ΔV | ~856 m/s | design |
-| Test suite | **163/163 green** | last run |
+| Test suite | **286/286 green** | last run |
 
 ---
 
@@ -367,13 +367,14 @@ tests/test_p1_regressions.py    11 tests  — P1 high-priority fixes validated
 tests/test_p2_p3_regressions.py 21 tests  — P2/P3 fixes validated
 ─────────────────────────────────────────────────────
 Total                           49 tests  ALL PASSING
-tests/test_scenario.py         123 tests  — scenario system + UI viewport + layout + graphical elements + timeline bands + fuel model + phase detection + Telemachus topics + stages
+tests/test_scenario.py         176 tests  — scenario system + UI viewport + layout + graphical elements + timeline bands + fuel model + phase detection + Telemachus topics + stages
 tests/test_ballistic_projection.py 34 tests — ballistic projection + drag
+tests/test_ui_playwright.py     27 tests  — DOM-based UI tests via headless Chromium
 ─────────────────────────────────────────────────────
-Total                          206 tests  ALL PASSING
+Total                          286 tests  ALL PASSING
 ```
 
-**Before making any change**: run the full suite and confirm 206/206 green.
+**Before making any change**: run the full suite and confirm 286/286 green.
 **When adding a feature or fixing a bug**: write the test first (red), then fix (green).
 
 The engineering review describes _why_ each fix was made, not just what changed.
@@ -405,7 +406,8 @@ LaunchScenario (scenario.py) → VehicleConfig + pitch program
 - `mission_control/telemachus_client.py` — `ScriptedTelemetry` class (appended)
 - `mission_control/server.py` — `/api/scenario/*` routes + `MissionSession`
 - `mission_control/static/index.html` — scenario control panel + `/api/constants`
-- `tests/test_scenario.py` — 123 tests covering model, playback, API, integration, UI viewport, layout, graphical elements, timeline bands, phase detection, fuel model, Telemachus topics, stages
+- `tests/test_scenario.py` — 176 tests covering model, playback, API, integration, UI viewport, layout, graphical elements, timeline bands, phase detection, fuel model, Telemachus topics, stages
+- `tests/test_ui_playwright.py` — 27 DOM-based tests via headless Chromium (grid layout, computed styles, JS functions, XSS escaping)
 
 ### Usage
 
@@ -456,11 +458,11 @@ The module-level `__getattr__` provides backward-compatible reads.
 ### Test suite
 
 ```bash
-# Full suite: 206 tests (49 regression + 123 scenario + 34 ballistic)
+# Full suite: 286 tests (49 regression + 176 scenario + 34 ballistic + 27 playwright)
 cd /home/user/KSPDirector/code
 python -m unittest tests.test_p0_regressions tests.test_p1_regressions \
     tests.test_p2_p3_regressions tests.test_scenario \
-    tests.test_ballistic_projection -v
+    tests.test_ballistic_projection tests.test_ui_playwright -v
 ```
 
 ---
@@ -501,9 +503,8 @@ instead of misleading countdown.
 scales with velocity during powered phases. Still approximate but physically
 directional.
 
-**P-TELEM-03: `v.surfaceSpeed` mapped to `v_horiz` is a semantic mismatch**
-`v.surfaceSpeed` is total surface-relative speed (includes vertical component),
-not horizontal speed. Pre-existing condition. Documented as known inaccuracy.
+~~**P-TELEM-03**~~ RESOLVED — `v.surfaceSpeed` now maps to `surface_speed`;
+`v_horiz` is derived as `sqrt(surface_speed² - v_vert²)` in `_handle_message`.
 
 ~~**P-TELEM-04**~~ RESOLVED — both SimulatedTelemetry and ScriptedTelemetry now emit
 `latitude` (0.0) and `longitude` (derived from downrange).
@@ -521,8 +522,9 @@ SocketIO allows all origins. Fine for local dev; tighten if network-exposed.
 **P-TEST-05: No integration test for full Socket.IO broadcast pipeline**
 Requires Socket.IO test infrastructure. Deferred.
 
-**P-TEST-06: HTML/JS tests are regex-based and brittle**
-Requires headless browser for proper DOM testing. Accepted as-is.
+~~**P-TEST-06**~~ RESOLVED — 27 Playwright DOM tests in `test_ui_playwright.py`
+verify grid layout, computed styles, element existence, JS function availability,
+and XSS escaping via headless Chromium. Regex tests remain as source-level checks.
 
 ~~**P-UI-01**~~ RESOLVED — threshold now uses `Math.max(Math.abs(r.nom), 5)` as floor
 to prevent false red when nominal value ≈ 0.

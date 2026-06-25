@@ -17,7 +17,7 @@ Common topic names (verified against TeaGuild/Telemachus-1 source):
     v.altitude            Altitude above sea level (m)
     v.speed               Total speed (m/s) — NOT v.velocity (doesn't exist)
     v.verticalSpeed       Vertical component of velocity (m/s)
-    v.surfaceSpeed        Surface speed (m/s) — NOT v.surfaceVelocity
+    v.surfaceSpeed        Total surface-relative speed (m/s) — includes vertical
     o.ApA                 Apoapsis altitude (m)
     o.PeA                 Periapsis altitude (m)
     o.inclination         Orbital inclination (degrees)
@@ -65,7 +65,7 @@ SUBSCRIBED_TOPICS = [
     "v.altitude",
     "v.heightFromTerrain",
     # Velocity — NOTE: v.velocity does NOT exist in Telemachus-1;
-    # v.speed is total speed, v.surfaceSpeed is surface speed
+    # v.speed is total orbital speed, v.surfaceSpeed is total surface-relative speed
     "v.verticalSpeed",
     "v.surfaceSpeed",
     "v.speed",
@@ -135,7 +135,7 @@ FIELD_MAP = {
     "v.altitude":             "altitude",          # m ASL
     "v.heightFromTerrain":    "height_terrain",    # m AGL
     "v.verticalSpeed":        "v_vert",            # m/s
-    "v.surfaceSpeed":         "v_horiz",           # m/s surface frame
+    "v.surfaceSpeed":         "surface_speed",     # m/s total surface-relative
     "v.speed":                "velocity",          # m/s total (orbital frame)
     "o.ApA":                  "apoapsis",          # m
     "o.PeA":                  "periapsis",         # m
@@ -197,6 +197,7 @@ STAGE_DV_TOPICS = [
 
 # Default / disconnected state (all zeros/None)
 EMPTY_STATE = {v: None for v in FIELD_MAP.values()}
+EMPTY_STATE["v_horiz"] = None  # derived: sqrt(surface_speed² - v_vert²)
 
 # ---------------------------------------------------------------------------
 # Downrange computation (Fix P0-03)
@@ -389,6 +390,11 @@ class TelematicusClient:
                     key = self._stage_field_map.get(topic)
                     if key:
                         self._state[key] = value
+
+            surf = self._state.get("surface_speed")
+            vv = self._state.get("v_vert")
+            if surf is not None and vv is not None:
+                self._state["v_horiz"] = _math.sqrt(max(0.0, surf * surf - vv * vv))
 
             self._rebuild_stages_locked()
 

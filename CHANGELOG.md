@@ -13,10 +13,14 @@
 - **Periapsis noise** (P-TELEM-05): Periapsis value now gets `noise()` applied in both offline modes, matching all other telemetry fields.
 - **Trajectory memory cap** (P-MEM-01): `TelematicusClient` trajectory list capped at 10,000 points with FIFO eviction to prevent unbounded memory growth.
 - **Launch longitude lock safety** (P-THREAD-01): `_launch_lon` reset now uses `_lock` consistently, avoiding a potential race between trajectory clear and longitude capture.
+- **Horizontal speed derivation** (P-TELEM-03): Live Telemachus client now derives `v_horiz = sqrt(surface_speed² - v_vert²)` instead of mapping `v.surfaceSpeed` directly. `v.surfaceSpeed` is total surface-relative speed (includes vertical component), not horizontal speed.
 
 ### Added
-- 31 new tests: `TestCircularizeBoundary` (5), `TestCLIScenarioFlag` (3), `TestAPIErrorPaths` (9), `TestInputValidation` (4), `TestPresetNoiseOverride` (3), `TestTelemetryFieldCompleteness` (3), `TestXSSEscaping` (4), `TestPitchDeltaThreshold` (1). Total: 220 tests.
+- 27 Playwright DOM tests (`test_ui_playwright.py`): Grid layout, computed CSS styles, element existence, JS function availability, XSS escaping, and constants loading — verified via headless Chromium instead of regex string matching.
+- 5 new `TestVHorizDerivation` tests verifying FIELD_MAP mapping, v_horiz derivation math, and EMPTY_STATE keys.
+- 31 new tests from prior round: `TestCircularizeBoundary` (5), `TestCLIScenarioFlag` (3), `TestAPIErrorPaths` (9), `TestInputValidation` (4), `TestPresetNoiseOverride` (3), `TestTelemetryFieldCompleteness` (3), `TestXSSEscaping` (4), `TestPitchDeltaThreshold` (1).
 - `wait_for()` polling helper replacing `time.sleep()` in async test assertions.
+- `playwright` added as test dependency for DOM-based UI tests.
 
 ## [1.1.0] — 2026-06-25
 
