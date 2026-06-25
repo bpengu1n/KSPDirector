@@ -188,6 +188,20 @@ def api_scenario_load():
         scenario = PRESET_SCENARIOS.get(data["preset"])
         if not scenario:
             return jsonify({"error": f"Unknown preset: {data['preset']}"}), 400
+        if "noise_pct" in data:
+            try:
+                noise = float(data["noise_pct"])
+                if 0.0 <= noise <= 0.20:
+                    scenario = LaunchScenario(**{**scenario.to_dict(), "noise_pct": noise})
+            except (TypeError, ValueError):
+                pass
+        if "playback_speed" in data:
+            try:
+                speed = float(data["playback_speed"])
+                if 0.25 <= speed <= 10.0:
+                    scenario = LaunchScenario(**{**scenario.to_dict(), "playback_speed": speed})
+            except (TypeError, ValueError):
+                pass
     else:
         scenario = LaunchScenario.from_dict(data)
         errors = scenario.validate()

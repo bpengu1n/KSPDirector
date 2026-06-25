@@ -17,7 +17,7 @@ Common topic names (verified against TeaGuild/Telemachus-1 source):
     v.altitude            Altitude above sea level (m)
     v.speed               Total speed (m/s) — NOT v.velocity (doesn't exist)
     v.verticalSpeed       Vertical component of velocity (m/s)
-    v.surfaceSpeed        Surface speed (m/s) — NOT v.surfaceVelocity
+    v.surfaceSpeed        Total surface-relative speed (m/s) — includes vertical
     o.ApA                 Apoapsis altitude (m)
     o.PeA                 Periapsis altitude (m)
     o.inclination         Orbital inclination (degrees)
@@ -65,7 +65,7 @@ SUBSCRIBED_TOPICS = [
     "v.altitude",
     "v.heightFromTerrain",
     # Velocity — NOTE: v.velocity does NOT exist in Telemachus-1;
-    # v.speed is total speed, v.surfaceSpeed is surface speed
+    # v.speed is total orbital speed, v.surfaceSpeed is total surface-relative speed
     "v.verticalSpeed",
     "v.surfaceSpeed",
     "v.speed",
@@ -135,7 +135,7 @@ FIELD_MAP = {
     "v.altitude":             "altitude",          # m ASL
     "v.heightFromTerrain":    "height_terrain",    # m AGL
     "v.verticalSpeed":        "v_vert",            # m/s
-    "v.surfaceSpeed":         "v_horiz",           # m/s surface frame
+    "v.surfaceSpeed":         "surface_speed",     # m/s total surface-relative
     "v.speed":                "velocity",          # m/s total (orbital frame)
     "o.ApA":                  "apoapsis",          # m
     "o.PeA":                  "periapsis",         # m
@@ -197,6 +197,7 @@ STAGE_DV_TOPICS = [
 
 # Default / disconnected state (all zeros/None)
 EMPTY_STATE = {v: None for v in FIELD_MAP.values()}
+EMPTY_STATE["v_horiz"] = None  # derived: sqrt(surface_speed² - v_vert²)
 
 # ---------------------------------------------------------------------------
 # Downrange computation (Fix P0-03)
@@ -390,6 +391,11 @@ class TelematicusClient:
                     if key:
                         self._state[key] = value
 
+            surf = self._state.get("surface_speed")
+            vv = self._state.get("v_vert")
+            if surf is not None and vv is not None:
+                self._state["v_horiz"] = _math.sqrt(max(0.0, surf * surf - vv * vv))
+
             self._rebuild_stages_locked()
 
             # Build a trajectory point if we have position data
@@ -415,16 +421,23 @@ class TelematicusClient:
                 }
 
         if alt is not None and alt > 0 and met is not None and met > 0:
+            need_reset = False
             with self._trajectory_lock:
                 if (self._trajectory and
                         met < 5.0 and
                         self._trajectory[-1]["t"] > 30.0):
                     self._trajectory.clear()
-                    self._launch_lon = None
+                    need_reset = True
                     logger.info("mission_time reset detected — trajectory cleared for new flight")
 
                 if not self._trajectory or (met - self._trajectory[-1]["t"]) > 0.5:
                     self._trajectory.append(point)
+                    if len(self._trajectory) > 10000:
+                        self._trajectory = self._trajectory[-10000:]
+
+            if need_reset:
+                with self._lock:
+                    self._launch_lon = None
 
         if self.on_update:
             try:
@@ -690,7 +703,7 @@ class SimulatedTelemetry:
                 phase = p.phase
 
             apoapsis = noise(p.apoapsis * 1000) if p.apoapsis and not landed else 0
-            periapsis = p.periapsis * 1000 if p.periapsis and not landed else 0
+            periapsis = noise(p.periapsis * 1000) if p.periapsis and not landed else 0
 
             lf = self._compute_liquid_fuel_from_mass(p.mass, p.phase)
             sf = max(0, 160 - elapsed * (160 / 25.3)) if elapsed < 25.3 else 0
@@ -699,6 +712,7 @@ class SimulatedTelemetry:
 
             sim_stages = self._build_sim_stages(elapsed, timing)
 
+            dr_deg = (p.downrange / 1000.0) / 10.47
             state = {
                 "connected": True, "simulated": True,
                 "altitude": alt,
@@ -708,7 +722,7 @@ class SimulatedTelemetry:
                 "apoapsis": apoapsis,
                 "periapsis": periapsis,
                 "inclination": 0.0,
-                "time_to_ap": max(0, 61 - elapsed) if not landed else None,
+                "time_to_ap": None,
                 "time_to_pe": None,
                 "pitch": pitch,
                 "heading": 90.0,
@@ -721,8 +735,10 @@ class SimulatedTelemetry:
                 "solid_fuel_max": sf_max,
                 "oxidizer": lf * (11.0 / 9.0),
                 "oxidizer_max": lf_max * (11.0 / 9.0),
+                "latitude": 0.0,
+                "longitude": dr_deg,
                 "mass": p.mass,
-                "g_force": noise(p.velocity / max(1, elapsed)) * 0.1 if not landed else 1.0,
+                "g_force": 1.0 if landed else (0.0 if p.phase in ("COAST", "COAST_APO") else noise(1.0 + p.velocity * 0.001)),
                 "mach": vel / 343.0 if alt < 70000 and not landed else 0.0,
                 "dynamic_pressure": 0.5 * (1.225 * (2.718 ** (-alt / 5000))) * vel * vel / 1000.0 if alt < 70000 and not landed else 0.0,
                 "atm_density": 1.225 if landed else (1.225 * (2.718 ** (-alt / 5000)) if alt < 70000 else 0),
@@ -1068,7 +1084,7 @@ class ScriptedTelemetry:
                 phase = p.phase
 
             apoapsis = noise(p.apoapsis * 1000) if p.apoapsis and not landed else 0
-            periapsis = p.periapsis * 1000 if p.periapsis and not landed else 0
+            periapsis = noise(p.periapsis * 1000) if p.periapsis and not landed else 0
 
             cfg = self._vehicle_cfg
             srb_burn_time = cfg.srb_burn_time_s if cfg else 25.3
@@ -1080,7 +1096,7 @@ class ScriptedTelemetry:
 
             sim_stages = self._build_scripted_stages(elapsed, timing)
 
-            total_sim_time = pts[-1].t if pts else 61
+            dr_deg = (p.downrange / 1000.0) / 10.47
             state = {
                 "connected": True, "simulated": True, "scripted": True,
                 "altitude": alt,
@@ -1090,7 +1106,7 @@ class ScriptedTelemetry:
                 "apoapsis": apoapsis,
                 "periapsis": periapsis,
                 "inclination": 0.0,
-                "time_to_ap": max(0, total_sim_time - elapsed) if not landed else None,
+                "time_to_ap": None,
                 "time_to_pe": None,
                 "pitch": pitch,
                 "heading": 90.0,
@@ -1103,8 +1119,10 @@ class ScriptedTelemetry:
                 "solid_fuel_max": sf_total,
                 "oxidizer": lf * (11.0 / 9.0),
                 "oxidizer_max": lf_total * (11.0 / 9.0),
+                "latitude": 0.0,
+                "longitude": dr_deg,
                 "mass": p.mass,
-                "g_force": 1.0,
+                "g_force": 1.0 if landed else (0.0 if p.phase in ("COAST", "COAST_APO") else noise(1.0 + p.velocity * 0.001)),
                 "mach": vel / 343.0 if alt < 70000 and not landed else 0.0,
                 "dynamic_pressure": 0.5 * (1.225 * (2.718 ** (-alt / 5000))) * vel * vel / 1000.0 if alt < 70000 and not landed else 0.0,
                 "atm_density": 1.225 if landed else (1.225 * (2.718 ** (-alt / 5000)) if alt < 70000 else 0),

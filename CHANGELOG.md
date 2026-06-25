@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Input validation hardening** (P-INPUT-01): `LaunchScenario.from_dict()` now coerces field types before construction; `validate()` catches `TypeError` on non-numeric inputs instead of crashing.
+- **XSS prevention** (P-XSS-01): Added `esc()` helper to web UI; all `innerHTML` interpolations of user-controlled data (gate phases, stage labels, scenario summaries) are now escaped.
+- **Pitch delta threshold floor** (P-UI-01): Nominal comparison threshold uses `Math.max(Math.abs(nominal), 5)` to avoid false warnings when nominal value is near zero.
+- **Preset noise/speed override** (P-FUEL-02): Preset scenario loads now accept `noise_pct` and `playback_speed` overrides from request body.
+- **`time_to_ap` placeholder** (P-TELEM-01): Offline telemetry modes set `time_to_ap` to `None` (UI shows "—") instead of omitting the field.
+- **g-force model** (P-TELEM-02): g-force now returns 0.0 during coast (freefall) and uses `1.0 + velocity * 0.001` during powered flight, replacing the `velocity / elapsed` formula that produced nonsensical values.
+- **Latitude/longitude fields** (P-TELEM-04): Both `SimulatedTelemetry` and `ScriptedTelemetry` now emit `latitude` and `longitude` in state dicts for ground-track display.
+- **Periapsis noise** (P-TELEM-05): Periapsis value now gets `noise()` applied in both offline modes, matching all other telemetry fields.
+- **Trajectory memory cap** (P-MEM-01): `TelematicusClient` trajectory list capped at 10,000 points with FIFO eviction to prevent unbounded memory growth.
+- **Launch longitude lock safety** (P-THREAD-01): `_launch_lon` reset now uses `_lock` consistently, avoiding a potential race between trajectory clear and longitude capture.
+- **Horizontal speed derivation** (P-TELEM-03): Live Telemachus client now derives `v_horiz = sqrt(surface_speed² - v_vert²)` instead of mapping `v.surfaceSpeed` directly. `v.surfaceSpeed` is total surface-relative speed (includes vertical component), not horizontal speed.
+
+### Added
+- 27 Playwright DOM tests (`test_ui_playwright.py`): Grid layout, computed CSS styles, element existence, JS function availability, XSS escaping, and constants loading — verified via headless Chromium instead of regex string matching.
+- 5 new `TestVHorizDerivation` tests verifying FIELD_MAP mapping, v_horiz derivation math, and EMPTY_STATE keys.
+- 31 new tests from prior round: `TestCircularizeBoundary` (5), `TestCLIScenarioFlag` (3), `TestAPIErrorPaths` (9), `TestInputValidation` (4), `TestPresetNoiseOverride` (3), `TestTelemetryFieldCompleteness` (3), `TestXSSEscaping` (4), `TestPitchDeltaThreshold` (1).
+- `wait_for()` polling helper replacing `time.sleep()` in async test assertions.
+- `playwright` added as test dependency for DOM-based UI tests.
+
 ## [1.1.0] — 2026-06-25
 
 ### Added
