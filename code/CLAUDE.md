@@ -598,3 +598,9 @@ flight-path angle from horizontal in degrees, or `None` for free gravity turn.
 
 **Test naming**: follow the `test_pNNN_description` pattern so the review
 finding is traceable from the test name.
+
+**CHANGELOG**: Update `CHANGELOG.md` (project root) before merging any feature
+branch. Add entries under `[Unreleased]` in the appropriate section (Added,
+Changed, Fixed). When cutting a release, move `[Unreleased]` entries under a
+dated version heading. The CHANGELOG is a required part of every merge — do not
+skip it.
