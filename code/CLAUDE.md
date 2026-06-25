@@ -50,9 +50,14 @@ code/                          (root — was percy_project_fixed/ in outputs)
 │   └── generate_diagrams.py   Consolidated single-file generator
 │
 ├── tests/
-│   ├── test_p0_regressions.py  17 tests — critical bug regressions
-│   ├── test_p1_regressions.py  11 tests — high-priority issue regressions
-│   └── test_p2_p3_regressions.py  21 tests — medium/low priority regressions
+│   ├── conftest.py                Shared pytest fixtures (project_root, vehicle_config, etc.)
+│   ├── test_p0_regressions.py     17 tests — critical bug regressions
+│   ├── test_p1_regressions.py     11 tests — high-priority issue regressions
+│   ├── test_p2_p3_regressions.py  21 tests — medium/low priority regressions
+│   ├── test_ballistic_projection.py  33 tests — ballistic projection + drag
+│   ├── test_scenario.py           188 tests — scenario system + integration
+│   ├── test_ui_playwright.py      54 tests — DOM-based UI tests (headless Chromium)
+│   └── COVERAGE_REPORT.md         Coverage analysis and recommendations
 │
 ├── tools/
 │   └── update_sheet3_trajectory.py   Regenerates TRAJECTORY constant in sheet3.py
@@ -92,10 +97,11 @@ python mission_control/server.py
 # Mission control — live KSP with Telemachus
 python mission_control/server.py --ksp-host 192.168.1.X
 
-# Full regression suite (must be green before committing any change)
-python -m unittest tests.test_p0_regressions \
-                   tests.test_p1_regressions \
-                   tests.test_p2_p3_regressions -v
+# Full test suite (must be green before committing any change)
+python -m pytest tests/ -v
+
+# With coverage report
+python -m pytest tests/ --cov=sim --cov=mission_control --cov-report=term-missing
 
 # Regenerate technical diagrams (run from nasa_dev/ or diagrams/)
 python generate_diagrams.py   # or generate_all.py
@@ -130,7 +136,7 @@ If you change any part mass or engine stat, re-run and update this table.
 | Target orbit | 80 × 80 km | design |
 | Orbital speed @80km | 2,279 m/s | derived |
 | TMI ΔV | ~856 m/s | design |
-| Test suite | **292/292 green** | last run |
+| Test suite | **270 pass, 54 skip** | pytest (playwright skip w/o browser) |
 
 ---
 
@@ -362,19 +368,21 @@ for f in ['sheet1','sheet2','sheet3','sheet4']:
 All 30 findings from `ENGINEERING_REVIEW.md` are resolved.
 
 ```
-tests/test_p0_regressions.py    17 tests  — P0 critical fixes validated
-tests/test_p1_regressions.py    11 tests  — P1 high-priority fixes validated
-tests/test_p2_p3_regressions.py 21 tests  — P2/P3 fixes validated
+tests/test_p0_regressions.py       17 tests  — P0 critical fixes validated
+tests/test_p1_regressions.py       11 tests  — P1 high-priority fixes validated
+tests/test_p2_p3_regressions.py    21 tests  — P2/P3 fixes validated
+tests/test_scenario.py            188 tests  — scenario system + integration
+tests/test_ballistic_projection.py 33 tests  — ballistic projection + drag
+tests/test_ui_playwright.py        54 tests  — DOM-based UI tests (headless Chromium)
 ─────────────────────────────────────────────────────
-Total                           49 tests  ALL PASSING
-tests/test_scenario.py         182 tests  — scenario system + UI viewport + layout + graphical elements + timeline bands + fuel model + phase detection + Telemachus topics + stages + Socket.IO broadcast
-tests/test_ballistic_projection.py 34 tests — ballistic projection + drag
-tests/test_ui_playwright.py     27 tests  — DOM-based UI tests via headless Chromium
-─────────────────────────────────────────────────────
-Total                          292 tests  ALL PASSING
+Total                             324 collected  (270 pass, 54 skip w/o browser)
 ```
 
-**Before making any change**: run the full suite and confirm 292/292 green.
+Test framework: **pytest** (migrated from unittest). Uses shared fixtures in
+`conftest.py`, `pytest.mark.parametrize` for data-driven tests, and
+`pytest.approx()` for float comparisons. No `unittest.TestCase` subclasses.
+
+**Before making any change**: run `python -m pytest tests/ -v` and confirm green.
 **When adding a feature or fixing a bug**: write the test first (red), then fix (green).
 
 The engineering review describes _why_ each fix was made, not just what changed.
@@ -458,11 +466,12 @@ The module-level `__getattr__` provides backward-compatible reads.
 ### Test suite
 
 ```bash
-# Full suite: 292 tests (49 regression + 182 scenario + 34 ballistic + 27 playwright)
+# Full suite: 324 collected (270 pass, 54 playwright skip without browser)
 cd /home/user/KSPDirector/code
-python -m unittest tests.test_p0_regressions tests.test_p1_regressions \
-    tests.test_p2_p3_regressions tests.test_scenario \
-    tests.test_ballistic_projection tests.test_ui_playwright -v
+python -m pytest tests/ -v
+
+# With coverage
+python -m pytest tests/ --cov=sim --cov=mission_control --cov-report=term-missing
 ```
 
 ---
