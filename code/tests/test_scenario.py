@@ -1250,5 +1250,298 @@ class TestUITimelinePhaseBands(unittest.TestCase):
             "The 'nominal' socket handler must rebuild phase bands when new trajectory data arrives")
 
 
+# ---------------------------------------------------------------------------
+# Phase 6: Telemachus integration — expanded topics, per-stage dV, live data
+# ---------------------------------------------------------------------------
+
+class TestTelematicusTopics(unittest.TestCase):
+    """Verify that SUBSCRIBED_TOPICS and FIELD_MAP cover the Telemachus-1 schema."""
+
+    def test_subscribed_topics_include_vessel_data(self):
+        from mission_control.telemachus_client import SUBSCRIBED_TOPICS
+        required = [
+            "v.altitude", "v.velocity", "v.verticalSpeed", "v.surfaceVelocity",
+            "v.mass", "v.geeForce", "v.mach", "v.dynamicPressurekPa",
+            "v.atmosphericDensity", "v.lat", "v.long", "v.currentStage",
+        ]
+        for t in required:
+            self.assertIn(t, SUBSCRIBED_TOPICS, f"Missing topic: {t}")
+
+    def test_subscribed_topics_include_orbital_data(self):
+        from mission_control.telemachus_client import SUBSCRIBED_TOPICS
+        required = [
+            "o.ApA", "o.PeA", "o.inclination", "o.eccentricity",
+            "o.sma", "o.period", "o.timeToAp", "o.timeToPe",
+        ]
+        for t in required:
+            self.assertIn(t, SUBSCRIBED_TOPICS, f"Missing topic: {t}")
+
+    def test_subscribed_topics_include_dv_totals(self):
+        from mission_control.telemachus_client import SUBSCRIBED_TOPICS
+        required = [
+            "dv.ready", "dv.stageCount", "dv.totalDVVac",
+            "dv.totalDVASL", "dv.totalDVActual", "dv.totalBurnTime",
+        ]
+        for t in required:
+            self.assertIn(t, SUBSCRIBED_TOPICS, f"Missing dV topic: {t}")
+
+    def test_subscribed_topics_include_resource_maxes(self):
+        from mission_control.telemachus_client import SUBSCRIBED_TOPICS
+        required = [
+            "r.resource[LiquidFuel]", "r.resource[SolidFuel]",
+            "r.resource[Oxidizer]", "r.resource[ElectricCharge]",
+            "r.resourceMax[LiquidFuel]", "r.resourceMax[SolidFuel]",
+            "r.resourceMax[Oxidizer]", "r.resourceMax[ElectricCharge]",
+        ]
+        for t in required:
+            self.assertIn(t, SUBSCRIBED_TOPICS, f"Missing resource topic: {t}")
+
+    def test_subscribed_topics_include_current_stage_resources(self):
+        from mission_control.telemachus_client import SUBSCRIBED_TOPICS
+        required = [
+            "r.resourceCurrent[LiquidFuel]", "r.resourceCurrent[SolidFuel]",
+            "r.resourceCurrent[Oxidizer]",
+            "r.resourceCurrentMax[LiquidFuel]", "r.resourceCurrentMax[SolidFuel]",
+            "r.resourceCurrentMax[Oxidizer]",
+        ]
+        for t in required:
+            self.assertIn(t, SUBSCRIBED_TOPICS, f"Missing stage resource topic: {t}")
+
+    def test_field_map_covers_all_subscribed_topics(self):
+        from mission_control.telemachus_client import SUBSCRIBED_TOPICS, FIELD_MAP
+        for topic in SUBSCRIBED_TOPICS:
+            self.assertIn(topic, FIELD_MAP,
+                f"SUBSCRIBED_TOPICS has '{topic}' but FIELD_MAP does not map it")
+
+    def test_field_map_has_no_duplicate_keys(self):
+        from mission_control.telemachus_client import FIELD_MAP
+        values = list(FIELD_MAP.values())
+        dupes = [v for v in values if values.count(v) > 1]
+        self.assertEqual(len(dupes), 0,
+            f"FIELD_MAP has duplicate internal keys: {set(dupes)}")
+
+    def test_stage_dv_topics_template_list(self):
+        from mission_control.telemachus_client import STAGE_DV_TOPICS
+        self.assertIn("dv.stageDVVac", STAGE_DV_TOPICS)
+        self.assertIn("dv.stageFuelMass", STAGE_DV_TOPICS)
+        self.assertIn("dv.stageBurnTime", STAGE_DV_TOPICS)
+        self.assertIn("dv.stageMass", STAGE_DV_TOPICS)
+        self.assertIn("dv.stageDryMass", STAGE_DV_TOPICS)
+        self.assertTrue(len(STAGE_DV_TOPICS) >= 15,
+            "Should have at least 15 per-stage topic templates")
+
+
+class TestTelematicusClientStages(unittest.TestCase):
+    """Verify TelematicusClient builds per-stage data from dV topics."""
+
+    def test_rebuild_stages_from_state(self):
+        from mission_control.telemachus_client import TelematicusClient
+        client = TelematicusClient.__new__(TelematicusClient)
+        client._state = {"dv_stage_count": 2}
+        client._stage_field_map = {}
+        client._lock = __import__('threading').Lock()
+
+        client._state["stage_0_dvvac"] = 1500.0
+        client._state["stage_0_fuelmass"] = 2.0
+        client._state["stage_0_drymass"] = 1.0
+        client._state["stage_1_dvvac"] = 3000.0
+        client._state["stage_1_fuelmass"] = 4.0
+        client._state["stage_1_drymass"] = 2.0
+
+        with client._lock:
+            client._rebuild_stages_locked()
+
+        stages = client._state["stages"]
+        self.assertEqual(len(stages), 2)
+        self.assertEqual(stages[0]["dv_vac"], 1500.0)
+        self.assertEqual(stages[0]["fuel_mass"], 2.0)
+        self.assertEqual(stages[1]["dv_vac"], 3000.0)
+        self.assertEqual(stages[1]["fuel_mass"], 4.0)
+
+    def test_rebuild_stages_skips_empty(self):
+        from mission_control.telemachus_client import TelematicusClient
+        client = TelematicusClient.__new__(TelematicusClient)
+        client._state = {"dv_stage_count": 3}
+        client._stage_field_map = {}
+        client._lock = __import__('threading').Lock()
+
+        client._state["stage_0_dvvac"] = 500.0
+        client._state["stage_0_fuelmass"] = 1.0
+        # stage 1 has no data at all
+        client._state["stage_2_dvvac"] = 800.0
+        client._state["stage_2_fuelmass"] = 0.5
+
+        with client._lock:
+            client._rebuild_stages_locked()
+
+        stages = client._state["stages"]
+        self.assertEqual(len(stages), 2)
+        self.assertEqual(stages[0]["index"], 0)
+        self.assertEqual(stages[1]["index"], 2)
+
+    def test_rebuild_stages_no_count(self):
+        from mission_control.telemachus_client import TelematicusClient
+        client = TelematicusClient.__new__(TelematicusClient)
+        client._state = {}
+        client._stage_field_map = {}
+        client._lock = __import__('threading').Lock()
+
+        with client._lock:
+            client._rebuild_stages_locked()
+        self.assertNotIn("stages", client._state)
+
+
+class TestSimulatedTelemetryStages(unittest.TestCase):
+    """Verify SimulatedTelemetry includes stages and live resource maxes."""
+
+    def test_state_includes_stages_array(self):
+        from mission_control.telemachus_client import SimulatedTelemetry
+        client = SimulatedTelemetry(rate_ms=200)
+        client.start()
+        time.sleep(1.0)
+        state = client.get_state()
+        client.stop()
+        self.assertIn("stages", state)
+        self.assertIsInstance(state["stages"], list)
+        self.assertTrue(len(state["stages"]) > 0,
+            "SimulatedTelemetry should report at least one stage with dV")
+
+    def test_state_includes_resource_maxes(self):
+        from mission_control.telemachus_client import SimulatedTelemetry
+        client = SimulatedTelemetry(rate_ms=200)
+        client.start()
+        time.sleep(1.0)
+        state = client.get_state()
+        client.stop()
+        self.assertIn("liquid_fuel_max", state)
+        self.assertIn("solid_fuel_max", state)
+        self.assertGreater(state["liquid_fuel_max"], 0)
+        self.assertGreater(state["solid_fuel_max"], 0)
+
+    def test_state_includes_mass_and_forces(self):
+        from mission_control.telemachus_client import SimulatedTelemetry
+        client = SimulatedTelemetry(rate_ms=200)
+        client.start()
+        time.sleep(1.0)
+        state = client.get_state()
+        client.stop()
+        self.assertIn("mass", state)
+        self.assertIn("mach", state)
+        self.assertIn("dynamic_pressure", state)
+
+    def test_stages_have_dv_and_fuel_data(self):
+        from mission_control.telemachus_client import SimulatedTelemetry
+        client = SimulatedTelemetry(rate_ms=200)
+        client.start()
+        time.sleep(1.0)
+        state = client.get_state()
+        client.stop()
+        for stg in state["stages"]:
+            self.assertIn("dv_vac", stg)
+            self.assertIn("fuel_mass", stg)
+            self.assertIn("label", stg)
+            self.assertIsNotNone(stg["dv_vac"])
+            self.assertIsNotNone(stg["fuel_mass"])
+
+    def test_no_hardcoded_fuel_maxes_in_html(self):
+        """The UI must use telemetry-provided fuel maxes, not hardcoded 360/160."""
+        html_path = os.path.join(ROOT, 'mission_control', 'static', 'index.html')
+        with open(html_path) as f:
+            html = f.read()
+        import re
+        matches = re.findall(r'lfMax\s*=\s*360|sfMax\s*=\s*160', html)
+        self.assertEqual(len(matches), 0,
+            f"Found hardcoded fuel maxes in HTML: {matches}. "
+            "Use s.liquid_fuel_max / s.solid_fuel_max from telemetry instead.")
+
+
+class TestScriptedTelemetryStages(unittest.TestCase):
+    """Verify ScriptedTelemetry includes stages and live resource maxes."""
+
+    def test_state_includes_stages_array(self):
+        from mission_control.telemachus_client import ScriptedTelemetry
+        from mission_control.scenario import LaunchScenario
+        client = ScriptedTelemetry(rate_ms=200)
+        client.load_scenario(LaunchScenario())
+        client.start()
+        time.sleep(1.0)
+        state = client.get_state()
+        client.stop()
+        self.assertIn("stages", state)
+        self.assertIsInstance(state["stages"], list)
+        self.assertTrue(len(state["stages"]) > 0)
+
+    def test_state_includes_resource_maxes(self):
+        from mission_control.telemachus_client import ScriptedTelemetry
+        from mission_control.scenario import LaunchScenario
+        client = ScriptedTelemetry(rate_ms=200)
+        client.load_scenario(LaunchScenario())
+        client.start()
+        time.sleep(1.0)
+        state = client.get_state()
+        client.stop()
+        self.assertIn("liquid_fuel_max", state)
+        self.assertIn("solid_fuel_max", state)
+        self.assertGreater(state["liquid_fuel_max"], 0)
+
+    def test_state_includes_mass(self):
+        from mission_control.telemachus_client import ScriptedTelemetry
+        from mission_control.scenario import LaunchScenario
+        client = ScriptedTelemetry(rate_ms=200)
+        client.load_scenario(LaunchScenario())
+        client.start()
+        time.sleep(1.0)
+        state = client.get_state()
+        client.stop()
+        self.assertIn("mass", state)
+        self.assertIsNotNone(state["mass"])
+        self.assertGreater(state["mass"], 0)
+
+
+class TestUIStageBarElements(unittest.TestCase):
+    """Verify the HTML contains dynamic per-stage dV bar elements and logic."""
+
+    @classmethod
+    def setUpClass(cls):
+        html_path = os.path.join(ROOT, 'mission_control', 'static', 'index.html')
+        with open(html_path) as f:
+            cls.html = f.read()
+
+    def test_stage_dv_section_exists(self):
+        self.assertIn('id="stage-dv-section"', self.html)
+        self.assertIn('id="stage-dv-bars"', self.html)
+
+    def test_update_stage_dv_bars_function(self):
+        self.assertIn('function updateStageDVBars', self.html)
+
+    def test_stage_dv_bars_called_from_telemetry_update(self):
+        self.assertIn('updateStageDVBars', self.html)
+        import re
+        calls = re.findall(r'updateStageDVBars\(', self.html)
+        self.assertTrue(len(calls) >= 1,
+            "updateStageDVBars should be called from updateTelemetryPanel")
+
+    def test_uses_stages_from_state(self):
+        self.assertIn('s.stages', self.html,
+            "UI must reference s.stages from telemetry state for dV bars")
+
+    def test_fuel_max_from_telemetry(self):
+        self.assertIn('s.liquid_fuel_max', self.html,
+            "UI must use s.liquid_fuel_max from telemetry state")
+        self.assertIn('s.solid_fuel_max', self.html,
+            "UI must use s.solid_fuel_max from telemetry state")
+
+    def test_vessel_section_exists(self):
+        self.assertIn('id="vessel-section"', self.html)
+        self.assertIn('id="t-mass"', self.html)
+        self.assertIn('id="t-gforce"', self.html)
+        self.assertIn('id="t-mach"', self.html)
+        self.assertIn('id="t-dynp"', self.html)
+
+    def test_orbit_time_fields_exist(self):
+        self.assertIn('id="t-tta"', self.html)
+        self.assertIn('id="t-ttp"', self.html)
+
+
 if __name__ == "__main__":
     unittest.main()

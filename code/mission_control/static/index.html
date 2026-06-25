@@ -196,6 +196,15 @@ html,body{width:100%;height:100%;background:var(--mc-bg);color:var(--mc-text);
 .fuel-bar-bg{height:5px;background:rgba(255,255,255,0.08);border-radius:2px;overflow:hidden}
 .fuel-bar-fill{height:100%;border-radius:2px;transition:width 0.5s;background:var(--mc-teal-bright)}
 
+/* Stage dV bars */
+.stage-dv-entry{margin-bottom:8px}
+.stage-dv-header{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:2px}
+.stage-dv-label{font-size:8.5px;letter-spacing:0.5px;color:var(--mc-text-dim)}
+.stage-dv-value{font-size:11px;font-weight:700;color:var(--mc-text-bright);letter-spacing:0.5px}
+.stage-dv-bar-bg{height:6px;background:rgba(255,255,255,0.08);border-radius:3px;overflow:hidden}
+.stage-dv-bar-fill{height:100%;border-radius:3px;transition:width 0.5s}
+.stage-dv-sub{font-size:8px;color:var(--mc-text-dim);margin-top:1px;display:flex;justify-content:space-between}
+
 /* ==========================================================================
    CANVAS PANELS (center)
    ========================================================================== */
@@ -361,6 +370,14 @@ html,body{width:100%;height:100%;background:var(--mc-bg);color:var(--mc-text);
         <span class="telem-label">INCLINATION</span>
         <span><span class="telem-value" id="t-inc">—</span><span class="telem-unit">°</span></span>
       </div>
+      <div class="telem-row">
+        <span class="telem-label">TIME TO AP</span>
+        <span><span class="telem-value" id="t-tta">—</span><span class="telem-unit">s</span></span>
+      </div>
+      <div class="telem-row">
+        <span class="telem-label">TIME TO PE</span>
+        <span><span class="telem-value" id="t-ttp">—</span><span class="telem-unit">s</span></span>
+      </div>
     </div>
 
     <div class="telem-section">
@@ -398,6 +415,31 @@ html,body{width:100%;height:100%;background:var(--mc-bg);color:var(--mc-text);
       </div>
       <div class="fuel-bar-wrap">
         <div class="fuel-bar-bg"><div class="fuel-bar-fill" id="sf-bar" style="width:0%;background:var(--mc-violet-bright)"></div></div>
+      </div>
+    </div>
+
+    <div class="telem-section" id="stage-dv-section" style="display:none">
+      <div class="telem-section-title">Stage ΔV</div>
+      <div id="stage-dv-bars"></div>
+    </div>
+
+    <div class="telem-section" id="vessel-section" style="display:none">
+      <div class="telem-section-title">Vessel</div>
+      <div class="telem-row">
+        <span class="telem-label">MASS</span>
+        <span><span class="telem-value" id="t-mass">—</span><span class="telem-unit">t</span></span>
+      </div>
+      <div class="telem-row">
+        <span class="telem-label">G-FORCE</span>
+        <span><span class="telem-value" id="t-gforce">—</span><span class="telem-unit">g</span></span>
+      </div>
+      <div class="telem-row">
+        <span class="telem-label">MACH</span>
+        <span><span class="telem-value" id="t-mach">—</span></span>
+      </div>
+      <div class="telem-row">
+        <span class="telem-label">DYN PRESS</span>
+        <span><span class="telem-value" id="t-dynp">—</span><span class="telem-unit">kPa</span></span>
       </div>
     </div>
 
@@ -879,6 +921,8 @@ function updateTelemetryPanel() {
   setVal('t-apo', apo_km.toFixed(1), colorClass(apo_km, 70, 30));
   setVal('t-pe',  pe_km.toFixed(0),  pe_km > 70 ? 'good' : pe_km > -100 ? '' : 'bad');
   setVal('t-inc', fmtNum(s.inclination, 1), '');
+  setVal('t-tta', s.time_to_ap != null ? fmtNum(s.time_to_ap, 0) : '—', '');
+  setVal('t-ttp', s.time_to_pe != null ? fmtNum(s.time_to_pe, 0) : '—', '');
 
   // Attitude (KSP pitch: +90=up, 0=horizontal, -90=down)
   setVal('t-pitch', fmtNum(s.pitch, 1), '');
@@ -890,14 +934,89 @@ function updateTelemetryPanel() {
   setVal('t-thr', thr, '');
   const lf = s.liquid_fuel || 0;
   const sf = s.solid_fuel || 0;
-  const lfMax = 360, sfMax = 160;
+  const lfMax = s.liquid_fuel_max || 360;
+  const sfMax = s.solid_fuel_max || 160;
   setVal('t-lf', lf.toFixed(0), colorClass(lf, lfMax*0.5, lfMax*0.2));
   setVal('t-sf', sf.toFixed(0), '');
   el('lf-bar').style.width = Math.max(0, Math.min(100, lf/lfMax*100)) + '%';
   el('sf-bar').style.width = Math.max(0, Math.min(100, sf/sfMax*100)) + '%';
 
+  // Vessel info
+  if (s.mass != null) {
+    el('vessel-section').style.display = '';
+    setVal('t-mass', fmtNum(s.mass, 2), '');
+    setVal('t-gforce', fmtNum(s.g_force, 2), '');
+    setVal('t-mach', fmtNum(s.mach, 2), '');
+    setVal('t-dynp', fmtNum(s.dynamic_pressure, 2), '');
+  }
+
+  // Stage dV bars
+  updateStageDVBars(s.stages || []);
+
   // Environment
   setVal('t-atm', fmtNum(s.atm_density, 4), '');
+}
+
+// ---------------------------------------------------------------
+// STAGE DV BARS
+// ---------------------------------------------------------------
+const STAGE_COLORS = [
+  'var(--mc-violet-bright)',
+  'var(--mc-accent)',
+  'var(--mc-teal-bright)',
+  'var(--mc-green-bright)',
+  'var(--mc-yellow-bright)',
+  '#e0e0e0',
+];
+
+let _lastStageCount = -1;
+
+function updateStageDVBars(stages) {
+  const section = el('stage-dv-section');
+  const container = el('stage-dv-bars');
+  if (!stages || stages.length === 0) {
+    section.style.display = 'none';
+    return;
+  }
+  section.style.display = '';
+
+  if (stages.length !== _lastStageCount) {
+    _lastStageCount = stages.length;
+    container.innerHTML = stages.map((stg, i) => {
+      const color = STAGE_COLORS[i % STAGE_COLORS.length];
+      const label = stg.label || ('STAGE ' + stg.index);
+      return `<div class="stage-dv-entry" id="stage-dv-${i}">
+        <div class="stage-dv-header">
+          <span class="stage-dv-label">${label}</span>
+          <span class="stage-dv-value" id="stage-dv-val-${i}">—</span>
+        </div>
+        <div class="stage-dv-bar-bg">
+          <div class="stage-dv-bar-fill" id="stage-dv-fill-${i}" style="width:0%;background:${color}"></div>
+        </div>
+        <div class="stage-dv-sub">
+          <span id="stage-dv-fuel-${i}">—</span>
+          <span id="stage-dv-burn-${i}">—</span>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  stages.forEach((stg, i) => {
+    const dvVac = stg.dv_vac || 0;
+    const fuelMass = stg.fuel_mass || 0;
+    const totalMass = (stg.fuel_mass || 0) + (stg.dry_mass || 0);
+    const fuelPct = totalMass > 0 ? (fuelMass / totalMass) * 100 : 0;
+    const burnTime = stg.burn_time || 0;
+
+    const valEl = el('stage-dv-val-' + i);
+    if (valEl) valEl.textContent = dvVac.toFixed(0) + ' m/s';
+    const fillEl = el('stage-dv-fill-' + i);
+    if (fillEl) fillEl.style.width = Math.max(0, Math.min(100, fuelPct)) + '%';
+    const fuelEl = el('stage-dv-fuel-' + i);
+    if (fuelEl) fuelEl.textContent = fuelMass.toFixed(2) + ' t fuel';
+    const burnEl = el('stage-dv-burn-' + i);
+    if (burnEl) burnEl.textContent = burnTime.toFixed(0) + 's burn';
+  });
 }
 
 // ---------------------------------------------------------------
