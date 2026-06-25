@@ -367,13 +367,13 @@ tests/test_p1_regressions.py    11 tests  — P1 high-priority fixes validated
 tests/test_p2_p3_regressions.py 21 tests  — P2/P3 fixes validated
 ─────────────────────────────────────────────────────
 Total                           49 tests  ALL PASSING
-tests/test_scenario.py          90 tests  — scenario system + UI viewport + layout + graphical elements + timeline bands
+tests/test_scenario.py          97 tests  — scenario system + UI viewport + layout + graphical elements + timeline bands + fuel model + phase detection
 tests/test_ballistic_projection.py 34 tests — ballistic projection + drag
 ─────────────────────────────────────────────────────
-Total                          173 tests  ALL PASSING
+Total                          180 tests  ALL PASSING
 ```
 
-**Before making any change**: run the full suite and confirm 173/173 green.
+**Before making any change**: run the full suite and confirm 180/180 green.
 **When adding a feature or fixing a bug**: write the test first (red), then fix (green).
 
 The engineering review describes _why_ each fix was made, not just what changed.
@@ -405,7 +405,7 @@ LaunchScenario (scenario.py) → VehicleConfig + pitch program
 - `mission_control/telemachus_client.py` — `ScriptedTelemetry` class (appended)
 - `mission_control/server.py` — `/api/scenario/*` routes + `MissionSession`
 - `mission_control/static/index.html` — scenario control panel + `/api/constants`
-- `tests/test_scenario.py` — 90 tests covering model, playback, API, integration, UI viewport, layout, graphical elements, timeline bands, phase detection
+- `tests/test_scenario.py` — 97 tests covering model, playback, API, integration, UI viewport, layout, graphical elements, timeline bands, phase detection, fuel model
 
 ### Usage
 
@@ -456,7 +456,7 @@ The module-level `__getattr__` provides backward-compatible reads.
 ### Test suite
 
 ```bash
-# Full suite: 173 tests (49 regression + 90 scenario + 34 ballistic)
+# Full suite: 180 tests (49 regression + 97 scenario + 34 ballistic)
 cd /home/user/KSPDirector/code
 python -m unittest tests.test_p0_regressions tests.test_p1_regressions \
     tests.test_p2_p3_regressions tests.test_scenario \

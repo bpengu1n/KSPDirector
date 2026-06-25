@@ -482,6 +482,215 @@ class TestScriptedDirectorIntegration(unittest.TestCase):
         self.assertEqual(phase, FlightPhase.CIRCULARIZE,
             f"At 80km alt / v_vert~0 / pe=20km, should be CIRCULARIZE, got {phase.value}")
 
+    def test_detect_phase_full_sequence(self):
+        """detect_phase must correctly transition through the full nominal
+        phase sequence when fed actual simulated telemetry states."""
+        from mission_control.nominal_compare import detect_phase, FlightPhase
+        from mission_control.telemachus_client import ScriptedTelemetry
+        from mission_control.scenario import LaunchScenario
+
+        st = ScriptedTelemetry(rate_ms=50)
+        st.load_scenario(LaunchScenario(noise_pct=0.0, playback_speed=50.0))
+        st.start()
+
+        seen_phases = set()
+        prev_phase = FlightPhase.PRELAUNCH
+        for _ in range(300):
+            time.sleep(0.05)
+            state = st.get_state()
+            if not state or state.get("mission_time", 0) < 0.1:
+                continue
+            phase = detect_phase(state, prev_phase)
+            seen_phases.add(phase.value)
+            prev_phase = phase
+            if state.get("mission_time", 0) > 490:
+                break
+        st.stop()
+
+        for expected in ("BOOST", "CORE", "TERRIER", "CIRCULARIZE", "ORBIT"):
+            self.assertIn(expected, seen_phases,
+                f"Phase {expected} should appear during full nominal ascent. "
+                f"Seen: {sorted(seen_phases)}")
+
+
+class TestTelemetryFuelModel(unittest.TestCase):
+    """Tests that simulated telemetry reports realistic fuel values
+    throughout the full ascent, including coast and circularization phases."""
+
+    def test_fuel_nonzero_during_coast_apo(self):
+        """Liquid fuel must remain positive during COAST_APO — the Terrier
+        has stopped burning and fuel is preserved for circularization."""
+        from mission_control.telemachus_client import ScriptedTelemetry
+        from mission_control.scenario import LaunchScenario
+
+        st = ScriptedTelemetry(rate_ms=50)
+        st.load_scenario(LaunchScenario(noise_pct=0.0, playback_speed=50.0))
+        st.start()
+
+        coast_apo_fuel = None
+        for _ in range(400):
+            time.sleep(0.05)
+            state = st.get_state()
+            if not state:
+                continue
+            if state.get("phase") == "COAST_APO":
+                coast_apo_fuel = state.get("liquid_fuel", 0)
+                break
+        st.stop()
+
+        self.assertIsNotNone(coast_apo_fuel,
+            "COAST_APO phase was never reached during playback")
+        self.assertGreater(coast_apo_fuel, 0,
+            f"Liquid fuel during COAST_APO should be > 0 (fuel is preserved "
+            f"for circularization), got {coast_apo_fuel}")
+
+    def test_fuel_nonzero_during_circularize(self):
+        """Liquid fuel must remain positive during CIRCULARIZE — the Terrier
+        is burning to raise periapsis."""
+        from mission_control.telemachus_client import ScriptedTelemetry
+        from mission_control.scenario import LaunchScenario
+
+        st = ScriptedTelemetry(rate_ms=50)
+        st.load_scenario(LaunchScenario(noise_pct=0.0, playback_speed=50.0))
+        st.start()
+
+        circ_fuel = None
+        for _ in range(400):
+            time.sleep(0.05)
+            state = st.get_state()
+            if not state:
+                continue
+            if state.get("phase") == "CIRCULARIZE":
+                circ_fuel = state.get("liquid_fuel", 0)
+                break
+        st.stop()
+
+        self.assertIsNotNone(circ_fuel,
+            "CIRCULARIZE phase was never reached during playback")
+        self.assertGreater(circ_fuel, 0,
+            f"Liquid fuel during CIRCULARIZE should be > 0 (Terrier is still "
+            f"burning), got {circ_fuel}")
+
+    def test_fuel_positive_at_orbit_insertion(self):
+        """At orbit insertion there should be remaining fuel for TMI burn."""
+        from mission_control.telemachus_client import ScriptedTelemetry
+        from mission_control.scenario import LaunchScenario
+
+        st = ScriptedTelemetry(rate_ms=50)
+        st.load_scenario(LaunchScenario(noise_pct=0.0, playback_speed=50.0))
+        st.start()
+
+        orbit_fuel = None
+        for _ in range(400):
+            time.sleep(0.05)
+            state = st.get_state()
+            if not state:
+                continue
+            if state.get("phase") == "ORBIT":
+                orbit_fuel = state.get("liquid_fuel", 0)
+                break
+        st.stop()
+
+        self.assertIsNotNone(orbit_fuel,
+            "ORBIT phase was never reached during playback")
+        self.assertGreater(orbit_fuel, 0,
+            f"Liquid fuel at orbit insertion should be > 0 (TMI fuel remaining), "
+            f"got {orbit_fuel}")
+
+    def test_fuel_decreases_monotonically_during_powered_phases(self):
+        """During powered flight (BOOST, CORE, TERRIER, CIRCULARIZE),
+        liquid fuel should decrease over time, not increase."""
+        from mission_control.telemachus_client import ScriptedTelemetry
+        from mission_control.scenario import LaunchScenario
+
+        st = ScriptedTelemetry(rate_ms=50)
+        st.load_scenario(LaunchScenario(noise_pct=0.0, playback_speed=50.0))
+        st.start()
+
+        fuel_by_phase = {}
+        for _ in range(400):
+            time.sleep(0.05)
+            state = st.get_state()
+            if not state:
+                continue
+            phase = state.get("phase", "")
+            lf = state.get("liquid_fuel", 0)
+            met = state.get("mission_time", 0)
+            if phase in ("CORE", "TERRIER", "CIRCULARIZE"):
+                if phase not in fuel_by_phase:
+                    fuel_by_phase[phase] = []
+                fuel_by_phase[phase].append((met, lf))
+            if met > 490:
+                break
+        st.stop()
+
+        for phase, readings in fuel_by_phase.items():
+            if len(readings) < 2:
+                continue
+            first_fuel = readings[0][1]
+            last_fuel = readings[-1][1]
+            self.assertGreater(first_fuel, last_fuel,
+                f"Fuel should decrease during {phase}: "
+                f"started at {first_fuel:.1f}, ended at {last_fuel:.1f}")
+
+    def test_fuel_constant_during_coast(self):
+        """During COAST_APO, fuel should remain approximately constant
+        (no engines burning)."""
+        from mission_control.telemachus_client import ScriptedTelemetry
+        from mission_control.scenario import LaunchScenario
+
+        st = ScriptedTelemetry(rate_ms=50)
+        st.load_scenario(LaunchScenario(noise_pct=0.0, playback_speed=50.0))
+        st.start()
+
+        coast_fuels = []
+        for _ in range(400):
+            time.sleep(0.05)
+            state = st.get_state()
+            if not state:
+                continue
+            if state.get("phase") == "COAST_APO":
+                coast_fuels.append(state.get("liquid_fuel", 0))
+            if state.get("mission_time", 0) > 490:
+                break
+        st.stop()
+
+        if len(coast_fuels) >= 2:
+            fuel_range = max(coast_fuels) - min(coast_fuels)
+            self.assertLess(fuel_range, 5.0,
+                f"Fuel during COAST_APO should be constant, but varied by "
+                f"{fuel_range:.1f} units (min={min(coast_fuels):.1f}, "
+                f"max={max(coast_fuels):.1f})")
+
+    def test_phase_from_telemetry_matches_sim(self):
+        """The phase field in telemetry state should come from the sim's
+        trajectory point, reflecting the actual planned phase."""
+        from mission_control.telemachus_client import ScriptedTelemetry
+        from mission_control.scenario import LaunchScenario
+
+        st = ScriptedTelemetry(rate_ms=50)
+        st.load_scenario(LaunchScenario(noise_pct=0.0, playback_speed=50.0))
+        st.start()
+
+        seen_phases = set()
+        for _ in range(400):
+            time.sleep(0.05)
+            state = st.get_state()
+            if not state:
+                continue
+            phase = state.get("phase")
+            if phase:
+                seen_phases.add(phase)
+            if state.get("mission_time", 0) > 490:
+                break
+        st.stop()
+
+        for expected in ("BOOST", "CORE", "TERRIER", "COAST_APO",
+                         "CIRCULARIZE", "ORBIT"):
+            self.assertIn(expected, seen_phases,
+                f"Telemetry phase '{expected}' should appear during nominal "
+                f"playback. Seen: {sorted(seen_phases)}")
+
     def test_nominal_regenerates_for_scenario(self):
         """When a scenario with different params is loaded, the sim produces
         different nominal numbers."""

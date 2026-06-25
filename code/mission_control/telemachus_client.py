@@ -362,17 +362,17 @@ class SimulatedTelemetry:
         if self._thread:
             self._thread.join(timeout=3.0)
 
-    def _compute_liquid_fuel(self, elapsed, phase):
-        core_burn_time = 60.0
-        terrier_burn_time = 225.0
-        if elapsed < core_burn_time:
-            return max(0, 360 - elapsed * (360 / core_burn_time))
-        if phase in ("TERRIER", "CIRCULARIZE"):
-            terrier_elapsed = elapsed - core_burn_time
-            return max(0, 360 - terrier_elapsed * (360 / terrier_burn_time))
-        if phase in ("COAST_APO",):
-            return 360 * max(0, 1.0 - (elapsed - core_burn_time) / terrier_burn_time)
-        return 0
+    def _compute_liquid_fuel_from_mass(self, mass, phase):
+        mission_wet = 6.250
+        mission_dry = 2.250
+        core_dry_with_mission = 8.102
+        if phase in ("BOOST", "CORE"):
+            fuel_frac = max(0, (mass - core_dry_with_mission) /
+                           (14.21 - core_dry_with_mission))
+            return 360.0 * fuel_frac
+        prop_remaining = max(0, mass - mission_dry)
+        prop_total = mission_wet - mission_dry
+        return 360.0 * min(1.0, prop_remaining / prop_total)
 
     def _run(self):
         import random
@@ -437,7 +437,7 @@ class SimulatedTelemetry:
                 "roll": random.uniform(-2, 2) if not landed else 0.0,
                 "mission_time": elapsed,
                 "throttle": 0.0 if landed else (1.0 if p.phase in ("BOOST", "CORE", "TERRIER", "CIRCULARIZE") else 0.0),
-                "liquid_fuel": self._compute_liquid_fuel(elapsed, p.phase),
+                "liquid_fuel": self._compute_liquid_fuel_from_mass(p.mass, p.phase),
                 "solid_fuel":  max(0, 160 - elapsed * (160 / 25.3)) if elapsed < 25.3 else 0,
                 "atm_density": 1.225 if landed else (1.225 * (2.718 ** (-alt / 5000)) if alt < 70000 else 0),
                 "phase": phase,
@@ -629,17 +629,22 @@ class ScriptedTelemetry:
             "n_points": len(self._points),
         }
 
-    def _compute_liquid_fuel(self, elapsed, phase):
-        core_burn_time = 60.0
-        terrier_burn_time = 225.0
-        if elapsed < core_burn_time:
-            return max(0, 360 - elapsed * (360 / core_burn_time))
-        if phase in ("TERRIER", "CIRCULARIZE"):
-            terrier_elapsed = elapsed - core_burn_time
-            return max(0, 360 - terrier_elapsed * (360 / terrier_burn_time))
-        if phase in ("COAST_APO",):
-            return 360 * max(0, 1.0 - (elapsed - core_burn_time) / terrier_burn_time)
-        return 0
+    def _compute_liquid_fuel_from_mass(self, mass, phase):
+        cfg = self._vehicle_cfg
+        mission_wet = cfg.mission_stage_wet if cfg else 6.250
+        mission_dry = cfg.mission_stage_dry if cfg else 2.250
+        if phase in ("BOOST", "CORE"):
+            liftoff = cfg.liftoff_mass_t if cfg else 14.21
+            core_prop = cfg.core_stage_prop if cfg else 4.0
+            booster_dry = cfg.booster_set_dry if cfg else 0.908
+            booster_prop = cfg.booster_set_prop if cfg else 1.200
+            core_dry_with_mission = liftoff - core_prop - booster_dry - booster_prop
+            fuel_frac = max(0, (mass - core_dry_with_mission) /
+                           max(0.01, liftoff - core_dry_with_mission))
+            return 360.0 * fuel_frac
+        prop_remaining = max(0, mass - mission_dry)
+        prop_total = max(0.01, mission_wet - mission_dry)
+        return 360.0 * min(1.0, prop_remaining / prop_total)
 
     def _run(self):
         import random
@@ -713,7 +718,7 @@ class ScriptedTelemetry:
                 "roll": (random.uniform(-2, 2) if noise_pct > 0 else 0.0) if not landed else 0.0,
                 "mission_time": elapsed,
                 "throttle": 0.0 if landed else (1.0 if p.phase in ("BOOST", "CORE", "TERRIER", "CIRCULARIZE") else 0.0),
-                "liquid_fuel": self._compute_liquid_fuel(elapsed, p.phase),
+                "liquid_fuel": self._compute_liquid_fuel_from_mass(p.mass, p.phase),
                 "solid_fuel": max(0, sf_total - elapsed * (sf_total / srb_burn_time)) if elapsed < srb_burn_time else 0,
                 "atm_density": 1.225 if landed else (1.225 * (2.718 ** (-alt / 5000)) if alt < 70000 else 0),
                 "phase": phase,
