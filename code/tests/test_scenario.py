@@ -1498,6 +1498,270 @@ class TestScriptedTelemetryStages(unittest.TestCase):
         self.assertGreater(state["mass"], 0)
 
 
+class TestStageDVAccuracy(unittest.TestCase):
+    """Verify that stage dV/fuel levels are physically accurate across all phases.
+
+    Key invariants:
+    - Fuel that isn't burning should not decrease
+    - Fuel that IS burning should decrease monotonically
+    - dV should track fuel depletion proportionally
+    - Stage entries should appear/disappear at correct phase transitions
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from sim import run_ascent, VehicleConfig
+        cls.result = run_ascent()
+        cls.pts = cls.result.points
+        cls.cfg = VehicleConfig()
+
+    def _get_points_for_phase(self, phase):
+        return [p for p in self.pts if p.phase == phase]
+
+    def _build_stages(self, elapsed):
+        from mission_control.telemachus_client import SimulatedTelemetry
+        s = SimulatedTelemetry.__new__(SimulatedTelemetry)
+        timing = s._extract_stage_timing(self.pts)
+        return s._build_sim_stages(elapsed, timing)
+
+    def _find_stage(self, stages, label):
+        for s in stages:
+            if s["label"] == label:
+                return s
+        return None
+
+    def test_terrier_dv_constant_during_boost(self):
+        """Terrier fuel is untouched during BOOST — its dV must not decrease."""
+        boost_pts = self._get_points_for_phase("BOOST")
+        self.assertTrue(len(boost_pts) > 5)
+        terrier_dvs = []
+        for p in boost_pts:
+            stages = self._build_stages(p.t)
+            t = self._find_stage(stages, "Stage 2")
+            if t:
+                terrier_dvs.append(t["dv_vac"])
+        self.assertTrue(len(terrier_dvs) > 5)
+        self.assertAlmostEqual(terrier_dvs[0], terrier_dvs[-1], delta=1.0,
+            msg=f"Terrier dV changed during BOOST: {terrier_dvs[0]:.1f} → {terrier_dvs[-1]:.1f}")
+
+    def test_terrier_dv_constant_during_core(self):
+        """Terrier fuel is untouched during CORE — its dV must not decrease."""
+        core_pts = self._get_points_for_phase("CORE")
+        self.assertTrue(len(core_pts) > 5)
+        terrier_dvs = []
+        for p in core_pts:
+            stages = self._build_stages(p.t)
+            t = self._find_stage(stages, "Stage 2")
+            if t:
+                terrier_dvs.append(t["dv_vac"])
+        self.assertTrue(len(terrier_dvs) > 5)
+        self.assertAlmostEqual(terrier_dvs[0], terrier_dvs[-1], delta=1.0,
+            msg=f"Terrier dV changed during CORE: {terrier_dvs[0]:.1f} → {terrier_dvs[-1]:.1f}")
+
+    def test_terrier_dv_constant_during_coast(self):
+        """Terrier isn't burning during COAST_APO — its dV must stay constant."""
+        coast_pts = self._get_points_for_phase("COAST_APO")
+        if not coast_pts:
+            self.skipTest("No COAST_APO phase in trajectory")
+        terrier_dvs = []
+        for p in coast_pts:
+            stages = self._build_stages(p.t)
+            t = self._find_stage(stages, "Stage 2")
+            if t:
+                terrier_dvs.append(t["dv_vac"])
+        self.assertTrue(len(terrier_dvs) > 2)
+        self.assertAlmostEqual(terrier_dvs[0], terrier_dvs[-1], delta=1.0,
+            msg=f"Terrier dV changed during COAST_APO: {terrier_dvs[0]:.1f} → {terrier_dvs[-1]:.1f}")
+
+    def test_terrier_dv_decreases_during_terrier_burn(self):
+        """Terrier dV should decrease monotonically during TERRIER phase."""
+        terrier_pts = self._get_points_for_phase("TERRIER")
+        self.assertTrue(len(terrier_pts) > 10)
+        terrier_dvs = []
+        for p in terrier_pts:
+            stages = self._build_stages(p.t)
+            t = self._find_stage(stages, "Stage 2")
+            if t:
+                terrier_dvs.append(t["dv_vac"])
+        self.assertTrue(terrier_dvs[0] > terrier_dvs[-1],
+            msg="Terrier dV should decrease during burn")
+        for i in range(1, len(terrier_dvs)):
+            self.assertLessEqual(terrier_dvs[i], terrier_dvs[i-1] + 0.1,
+                msg=f"Terrier dV increased at step {i}: {terrier_dvs[i-1]:.1f} → {terrier_dvs[i]:.1f}")
+
+    def test_terrier_starts_near_full_dv(self):
+        """At T+0, Terrier should report close to its full 3458 m/s dV."""
+        stages = self._build_stages(0.0)
+        t = self._find_stage(stages, "Stage 2")
+        self.assertIsNotNone(t, "Terrier stage should exist at T+0")
+        self.assertAlmostEqual(t["dv_vac"], 3458.0, delta=50,
+            msg=f"Terrier dV at T+0 should be ~3458, got {t['dv_vac']:.1f}")
+
+    def test_core_dv_decreases_during_boost(self):
+        """Core stage burns from liftoff — its dV should decrease during BOOST."""
+        boost_pts = self._get_points_for_phase("BOOST")
+        core_dvs = []
+        for p in boost_pts:
+            stages = self._build_stages(p.t)
+            c = self._find_stage(stages, "Stage 1")
+            if c:
+                core_dvs.append(c["dv_vac"])
+        self.assertTrue(len(core_dvs) > 5)
+        self.assertGreater(core_dvs[0], core_dvs[-1],
+            msg="Core dV should decrease during BOOST as the Swivel burns")
+
+    def test_core_dv_decreases_during_core(self):
+        """Core dV should continue decreasing during CORE phase."""
+        core_pts = self._get_points_for_phase("CORE")
+        core_dvs = []
+        for p in core_pts:
+            stages = self._build_stages(p.t)
+            c = self._find_stage(stages, "Stage 1")
+            if c:
+                core_dvs.append(c["dv_vac"])
+        self.assertTrue(len(core_dvs) > 5)
+        self.assertGreater(core_dvs[0], core_dvs[-1],
+            msg="Core dV should decrease during CORE phase")
+
+    def test_srb_dv_decreases_during_boost(self):
+        """SRB dV should decrease monotonically during BOOST."""
+        boost_pts = self._get_points_for_phase("BOOST")
+        srb_dvs = []
+        for p in boost_pts:
+            stages = self._build_stages(p.t)
+            s = self._find_stage(stages, "Stage 0")
+            if s:
+                srb_dvs.append(s["dv_vac"])
+        self.assertTrue(len(srb_dvs) > 5)
+        self.assertGreater(srb_dvs[0], srb_dvs[-1],
+            msg="SRB dV should decrease during BOOST")
+        self.assertAlmostEqual(srb_dvs[0], 222.0, delta=10,
+            msg="SRB dV at start should be near 222 m/s")
+
+    def test_srb_depleted_after_boost(self):
+        """SRB stage should have status 'depleted' after booster sep."""
+        core_pts = self._get_points_for_phase("CORE")
+        for p in core_pts[:3]:
+            stages = self._build_stages(p.t)
+            s = self._find_stage(stages, "Stage 0")
+            self.assertIsNotNone(s, "Stage 0 should always be present")
+            self.assertEqual(s["status"], "depleted",
+                msg=f"Stage 0 should be depleted during CORE at t={p.t:.1f}")
+            self.assertAlmostEqual(s["dv_vac"], 0.0, delta=0.1)
+
+    def test_core_depleted_after_core_phase(self):
+        """Core stage should have status 'depleted' during TERRIER phase."""
+        terrier_pts = self._get_points_for_phase("TERRIER")
+        for p in terrier_pts[:3]:
+            stages = self._build_stages(p.t)
+            c = self._find_stage(stages, "Stage 1")
+            self.assertIsNotNone(c, "Stage 1 should always be present")
+            self.assertEqual(c["status"], "depleted",
+                msg=f"Stage 1 should be depleted during TERRIER at t={p.t:.1f}")
+            self.assertAlmostEqual(c["dv_vac"], 0.0, delta=0.1)
+
+    def test_all_stages_always_present(self):
+        """All 3 stages should be present at every point in the flight."""
+        for p in self.pts[::10]:
+            stages = self._build_stages(p.t)
+            self.assertEqual(len(stages), 3, f"Should have 3 stages at t={p.t:.1f}")
+            labels = [s["label"] for s in stages]
+            self.assertEqual(labels, ["Stage 0", "Stage 1", "Stage 2"])
+
+    def test_stages_have_dv_initial(self):
+        """Every stage should have a dv_initial field for bar scaling."""
+        stages = self._build_stages(0.0)
+        for s in stages:
+            self.assertIn("dv_initial", s, f"Stage {s['label']} missing dv_initial")
+            self.assertGreater(s["dv_initial"], 0)
+
+    def test_stages_have_status(self):
+        """Every stage should have a status field."""
+        stages = self._build_stages(0.0)
+        for s in stages:
+            self.assertIn("status", s)
+            self.assertIn(s["status"], ("pending", "active", "depleted"))
+
+
+class TestScriptedStageDVAccuracy(unittest.TestCase):
+    """Verify ScriptedTelemetry stage dV/fuel accuracy (same invariants)."""
+
+    @classmethod
+    def setUpClass(cls):
+        from sim import run_ascent, VehicleConfig
+        from mission_control.scenario import LaunchScenario
+        from mission_control.telemachus_client import SimulatedTelemetry
+        cls.scenario = LaunchScenario()
+        cls.cfg = cls.scenario.to_vehicle_config()
+        cls.result = run_ascent(cls.cfg, cls.scenario.get_pitch_program())
+        cls.pts = cls.result.points
+        cls.timing = SimulatedTelemetry._extract_stage_timing(cls.pts)
+
+    def _build_stages(self, elapsed):
+        from mission_control.telemachus_client import ScriptedTelemetry
+        s = ScriptedTelemetry.__new__(ScriptedTelemetry)
+        s._vehicle_cfg = self.cfg
+        s._scenario = self.scenario
+        return s._build_scripted_stages(elapsed, self.timing)
+
+    def _find_stage(self, stages, label):
+        for s in stages:
+            if s["label"] == label:
+                return s
+        return None
+
+    def test_terrier_dv_constant_during_boost(self):
+        """Terrier fuel untouched during BOOST — dV must be constant."""
+        boost_pts = [p for p in self.pts if p.phase == "BOOST"]
+        terrier_dvs = []
+        for p in boost_pts:
+            stages = self._build_stages(p.t)
+            t = self._find_stage(stages, "Stage 2")
+            if t:
+                terrier_dvs.append(t["dv_vac"])
+        self.assertTrue(len(terrier_dvs) > 5)
+        self.assertAlmostEqual(terrier_dvs[0], terrier_dvs[-1], delta=1.0,
+            msg=f"Terrier dV changed during BOOST: {terrier_dvs[0]:.1f} → {terrier_dvs[-1]:.1f}")
+
+    def test_terrier_dv_constant_during_core(self):
+        """Terrier fuel untouched during CORE — dV must be constant."""
+        core_pts = [p for p in self.pts if p.phase == "CORE"]
+        terrier_dvs = []
+        for p in core_pts:
+            stages = self._build_stages(p.t)
+            t = self._find_stage(stages, "Stage 2")
+            if t:
+                terrier_dvs.append(t["dv_vac"])
+        self.assertTrue(len(terrier_dvs) > 5)
+        self.assertAlmostEqual(terrier_dvs[0], terrier_dvs[-1], delta=1.0,
+            msg=f"Terrier dV changed during CORE: {terrier_dvs[0]:.1f} → {terrier_dvs[-1]:.1f}")
+
+    def test_terrier_dv_decreases_during_terrier_burn(self):
+        """Terrier dV should decrease during TERRIER phase."""
+        terrier_pts = [p for p in self.pts if p.phase == "TERRIER"]
+        terrier_dvs = []
+        for p in terrier_pts:
+            stages = self._build_stages(p.t)
+            t = self._find_stage(stages, "Stage 2")
+            if t:
+                terrier_dvs.append(t["dv_vac"])
+        self.assertTrue(terrier_dvs[0] > terrier_dvs[-1])
+
+    def test_terrier_dv_constant_during_coast(self):
+        """Terrier dV should not change during COAST_APO."""
+        coast_pts = [p for p in self.pts if p.phase == "COAST_APO"]
+        if not coast_pts:
+            self.skipTest("No COAST_APO phase")
+        terrier_dvs = []
+        for p in coast_pts:
+            stages = self._build_stages(p.t)
+            t = self._find_stage(stages, "Stage 2")
+            if t:
+                terrier_dvs.append(t["dv_vac"])
+        self.assertTrue(len(terrier_dvs) > 2)
+        self.assertAlmostEqual(terrier_dvs[0], terrier_dvs[-1], delta=1.0)
+
+
 class TestUIStageBarElements(unittest.TestCase):
     """Verify the HTML contains dynamic per-stage dV bar elements and logic."""
 

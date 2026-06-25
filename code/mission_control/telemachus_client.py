@@ -541,44 +541,108 @@ class SimulatedTelemetry:
         prop_total = mission_wet - mission_dry
         return 360.0 * min(1.0, prop_remaining / prop_total)
 
-    def _build_sim_stages(self, pt, elapsed, lf, sf, lf_max, sf_max):
-        stages = []
-        if sf > 0:
-            stages.append({
-                "index": 0,
-                "dv_vac": sf / sf_max * 222.0 if sf_max > 0 else 0,
-                "dv_asl": sf / sf_max * 170.0 if sf_max > 0 else 0,
-                "fuel_mass": sf * 0.0075,
+    @staticmethod
+    def _extract_stage_timing(points):
+        """Extract phase transition times from trajectory points."""
+        srb_end = 25.3
+        core_end = 61.0
+        terrier_end = 61.0
+        prev_phase = None
+        for p in points:
+            if prev_phase == "BOOST" and p.phase != "BOOST":
+                srb_end = p.t
+            if prev_phase == "CORE" and p.phase not in ("BOOST", "CORE"):
+                core_end = p.t
+            if prev_phase == "TERRIER" and p.phase != "TERRIER":
+                terrier_end = p.t
+            prev_phase = p.phase
+        return {"srb_end": srb_end, "core_end": core_end,
+                "terrier_start": core_end, "terrier_end": terrier_end}
+
+    def _build_sim_stages(self, elapsed, timing):
+        """Build stage list using time-based fuel depletion.
+
+        All stages are always present. Each stage's dV depletes only
+        during its active burn window. Status indicates whether the
+        stage is pending, active, or depleted.
+        """
+        srb_end = timing["srb_end"]
+        core_end = timing["core_end"]
+        terrier_start = timing["terrier_start"]
+        terrier_end = timing["terrier_end"]
+
+        srb_initial_dv = 222.0
+        core_initial_dv = 1100.0
+        terrier_initial_dv = 3458.0
+
+        if elapsed < srb_end:
+            srb_frac = max(0, 1.0 - elapsed / srb_end)
+            srb_status = "active"
+        else:
+            srb_frac = 0.0
+            srb_status = "depleted"
+
+        if elapsed < core_end:
+            core_frac = max(0, 1.0 - elapsed / core_end)
+            core_status = "active"
+        else:
+            core_frac = 0.0
+            core_status = "depleted"
+
+        if elapsed < terrier_start:
+            terrier_frac = 1.0
+            terrier_status = "pending"
+        elif elapsed < terrier_end:
+            terrier_frac = max(0, 1.0 - (elapsed - terrier_start) / (terrier_end - terrier_start))
+            terrier_status = "active"
+        else:
+            terrier_frac = (terrier_end - terrier_start) / (terrier_end - terrier_start)
+            burn_duration = terrier_end - terrier_start
+            remaining_prop = 1.0 - burn_duration / max(0.01, burn_duration)
+            terrier_frac = max(0, remaining_prop) if terrier_end < timing.get("total", 9999) else 0.0
+            terrier_status = "depleted"
+
+        # After terrier burn, maintain the remaining dV (coast with fuel left)
+        if elapsed >= terrier_end:
+            terrier_burn_frac = min(1.0, (terrier_end - terrier_start) / 225.0)
+            terrier_frac = max(0, 1.0 - terrier_burn_frac)
+            terrier_status = "depleted"
+
+        return [
+            {
+                "index": 0, "label": "Stage 0",
+                "dv_vac": srb_frac * srb_initial_dv,
+                "dv_asl": srb_frac * 170.0,
+                "dv_initial": srb_initial_dv,
+                "fuel_mass": srb_frac * 1.200,
                 "dry_mass": 0.908,
-                "mass": sf * 0.0075 + 0.908,
-                "burn_time": max(0, 25.3 - elapsed),
-                "label": "SRB",
-            })
-        if lf > 0 and pt.phase in ("BOOST", "CORE"):
-            core_lf = min(lf, 180.0)
-            stages.append({
-                "index": 1,
-                "dv_vac": core_lf / 180.0 * 1100.0,
-                "dv_asl": core_lf / 180.0 * 900.0,
-                "fuel_mass": core_lf * 0.005 * (1 + 11.0 / 9.0),
+                "mass": srb_frac * 1.200 + 0.908,
+                "burn_time": max(0, srb_end - elapsed) if srb_status == "active" else 0,
+                "status": srb_status,
+            },
+            {
+                "index": 1, "label": "Stage 1",
+                "dv_vac": core_frac * core_initial_dv,
+                "dv_asl": core_frac * 900.0,
+                "dv_initial": core_initial_dv,
+                "fuel_mass": core_frac * 4.0,
                 "dry_mass": 1.8525,
-                "mass": core_lf * 0.005 * (1 + 11.0 / 9.0) + 1.8525,
-                "burn_time": core_lf / 180.0 * 35.0,
-                "label": "Core",
-            })
-        terrier_lf = lf if pt.phase not in ("BOOST", "CORE") else min(lf, 360.0)
-        if terrier_lf > 0:
-            stages.append({
-                "index": 2 if pt.phase in ("BOOST", "CORE") else 0,
-                "dv_vac": terrier_lf / 360.0 * 3458.0,
-                "dv_asl": terrier_lf / 360.0 * 800.0,
-                "fuel_mass": terrier_lf * 0.005 * (1 + 11.0 / 9.0),
+                "mass": core_frac * 4.0 + 1.8525,
+                "burn_time": max(0, core_end - elapsed) if core_status == "active" else 0,
+                "status": core_status,
+            },
+            {
+                "index": 2, "label": "Stage 2",
+                "dv_vac": terrier_frac * terrier_initial_dv,
+                "dv_asl": terrier_frac * 800.0,
+                "dv_initial": terrier_initial_dv,
+                "fuel_mass": terrier_frac * 4.0,
                 "dry_mass": 2.250,
-                "mass": terrier_lf * 0.005 * (1 + 11.0 / 9.0) + 2.250,
-                "burn_time": terrier_lf / 360.0 * 225.0,
-                "label": "Terrier",
-            })
-        return stages
+                "mass": terrier_frac * 4.0 + 2.250,
+                "burn_time": max(0, terrier_end - elapsed) if terrier_status == "active" else 0,
+                "status": terrier_status,
+            },
+        ]
 
     def _run(self):
         import random
@@ -590,16 +654,14 @@ class SimulatedTelemetry:
 
         self._start_time = time.time()
         pt_idx = 0
+        timing = self._extract_stage_timing(pts)
 
         while not self._stop_event.is_set():
             elapsed = time.time() - self._start_time
-            # Fix P2-06: if elapsed resets (e.g., start_time was reset externally),
-            # clear the trajectory so the new simulated flight starts clean.
             with self._trajectory_lock:
                 if (elapsed < 1.0 and self._trajectory and
                         self._trajectory[-1]["t"] > 30.0):
                     self._trajectory.clear()
-            # Advance through nominal points up to current elapsed time
             while pt_idx + 1 < len(pts) and pts[pt_idx + 1].t <= elapsed:
                 pt_idx += 1
 
@@ -635,7 +697,7 @@ class SimulatedTelemetry:
             lf_max = 360.0
             sf_max = 160.0
 
-            sim_stages = self._build_sim_stages(p, elapsed, lf, sf, lf_max, sf_max)
+            sim_stages = self._build_sim_stages(elapsed, timing)
 
             state = {
                 "connected": True, "simulated": True,
@@ -873,52 +935,85 @@ class ScriptedTelemetry:
         prop_total = max(0.01, mission_wet - mission_dry)
         return 360.0 * min(1.0, prop_remaining / prop_total)
 
-    def _build_scripted_stages(self, pt, elapsed, lf, sf, lf_max, sf_max):
+    def _build_scripted_stages(self, elapsed, timing):
+        """Build stage list using time-based fuel depletion (same as SimulatedTelemetry)."""
         cfg = self._vehicle_cfg
-        stages = []
-        if sf > 0 and cfg and cfg.n_boosters > 0:
-            stages.append({
-                "index": 0,
-                "dv_vac": sf / max(0.01, sf_max) * 222.0,
-                "dv_asl": sf / max(0.01, sf_max) * 170.0,
-                "fuel_mass": sf * 0.0075,
-                "dry_mass": cfg.booster_set_dry if cfg else 0.908,
-                "mass": sf * 0.0075 + (cfg.booster_set_dry if cfg else 0.908),
-                "burn_time": max(0, (cfg.srb_burn_time_s if cfg else 25.3) - elapsed),
-                "label": "SRB",
-            })
-        if lf > 0 and pt.phase in ("BOOST", "CORE"):
-            core_prop = cfg.core_stage_prop if cfg else 4.0
-            core_frac = min(1.0, lf / max(0.01, lf_max))
-            stages.append({
-                "index": 1,
-                "dv_vac": core_frac * 1100.0,
+        srb_end = timing["srb_end"]
+        core_end = timing["core_end"]
+        terrier_start = timing["terrier_start"]
+        terrier_end = timing["terrier_end"]
+
+        srb_initial_dv = 222.0
+        core_initial_dv = 1100.0
+        terrier_initial_dv = cfg.mission_stage_dv_ms if cfg else 3458.0
+
+        if elapsed < srb_end:
+            srb_frac = max(0, 1.0 - elapsed / srb_end)
+            srb_status = "active"
+        else:
+            srb_frac = 0.0
+            srb_status = "depleted"
+
+        if elapsed < core_end:
+            core_frac = max(0, 1.0 - elapsed / core_end)
+            core_status = "active"
+        else:
+            core_frac = 0.0
+            core_status = "depleted"
+
+        if elapsed < terrier_start:
+            terrier_frac = 1.0
+            terrier_status = "pending"
+        elif elapsed < terrier_end:
+            terrier_frac = max(0, 1.0 - (elapsed - terrier_start) / (terrier_end - terrier_start))
+            terrier_status = "active"
+        else:
+            terrier_burn_frac = min(1.0, (terrier_end - terrier_start) / 225.0)
+            terrier_frac = max(0, 1.0 - terrier_burn_frac)
+            terrier_status = "depleted"
+
+        booster_prop = cfg.booster_set_prop if cfg else 1.200
+        booster_dry = cfg.booster_set_dry if cfg else 0.908
+        core_prop = cfg.core_stage_prop if cfg else 4.0
+        mission_wet = cfg.mission_stage_wet if cfg else 6.250
+        mission_dry = cfg.mission_stage_dry if cfg else 2.250
+        mission_prop = mission_wet - mission_dry
+
+        return [
+            {
+                "index": 0, "label": "Stage 0",
+                "dv_vac": srb_frac * srb_initial_dv,
+                "dv_asl": srb_frac * 170.0,
+                "dv_initial": srb_initial_dv,
+                "fuel_mass": srb_frac * booster_prop,
+                "dry_mass": booster_dry,
+                "mass": srb_frac * booster_prop + booster_dry,
+                "burn_time": max(0, srb_end - elapsed) if srb_status == "active" else 0,
+                "status": srb_status,
+            },
+            {
+                "index": 1, "label": "Stage 1",
+                "dv_vac": core_frac * core_initial_dv,
                 "dv_asl": core_frac * 900.0,
+                "dv_initial": core_initial_dv,
                 "fuel_mass": core_frac * core_prop,
                 "dry_mass": 1.8525,
                 "mass": core_frac * core_prop + 1.8525,
-                "burn_time": core_frac * 35.0,
-                "label": "Core",
-            })
-        mission_dv = cfg.mission_stage_dv_ms if cfg else 3458.0
-        if lf > 0:
-            mission_wet = cfg.mission_stage_wet if cfg else 6.250
-            mission_dry = cfg.mission_stage_dry if cfg else 2.250
-            if pt.phase not in ("BOOST", "CORE"):
-                frac = min(1.0, lf / max(0.01, lf_max))
-            else:
-                frac = 1.0
-            stages.append({
-                "index": len(stages),
-                "dv_vac": frac * mission_dv,
-                "dv_asl": frac * 800.0,
-                "fuel_mass": frac * (mission_wet - mission_dry),
+                "burn_time": max(0, core_end - elapsed) if core_status == "active" else 0,
+                "status": core_status,
+            },
+            {
+                "index": 2, "label": "Stage 2",
+                "dv_vac": terrier_frac * terrier_initial_dv,
+                "dv_asl": terrier_frac * 800.0,
+                "dv_initial": terrier_initial_dv,
+                "fuel_mass": terrier_frac * mission_prop,
                 "dry_mass": mission_dry,
-                "mass": frac * (mission_wet - mission_dry) + mission_dry,
-                "burn_time": frac * 225.0,
-                "label": "Terrier",
-            })
-        return stages
+                "mass": terrier_frac * mission_prop + mission_dry,
+                "burn_time": max(0, terrier_end - elapsed) if terrier_status == "active" else 0,
+                "status": terrier_status,
+            },
+        ]
 
     def _run(self):
         import random
@@ -929,6 +1024,7 @@ class ScriptedTelemetry:
 
         pt_idx = 0
         noise_pct = self._scenario.noise_pct if self._scenario else 0.02
+        timing = SimulatedTelemetry._extract_stage_timing(pts)
 
         while not self._stop_event.is_set():
             with self._lock:
@@ -982,7 +1078,7 @@ class ScriptedTelemetry:
             lf = self._compute_liquid_fuel_from_mass(p.mass, p.phase)
             sf = max(0, sf_total - elapsed * (sf_total / srb_burn_time)) if elapsed < srb_burn_time else 0
 
-            sim_stages = self._build_scripted_stages(p, elapsed, lf, sf, lf_total, sf_total)
+            sim_stages = self._build_scripted_stages(elapsed, timing)
 
             total_sim_time = pts[-1].t if pts else 61
             state = {

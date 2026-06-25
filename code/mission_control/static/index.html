@@ -197,13 +197,23 @@ html,body{width:100%;height:100%;background:var(--mc-bg);color:var(--mc-text);
 .fuel-bar-fill{height:100%;border-radius:2px;transition:width 0.5s;background:var(--mc-teal-bright)}
 
 /* Stage dV bars */
-.stage-dv-entry{margin-bottom:8px}
+.stage-dv-entry{margin-bottom:8px;transition:opacity 0.3s}
+.stage-dv-entry.depleted{opacity:0.35}
+.stage-dv-entry.pending{opacity:0.6}
+.stage-dv-entry.active{opacity:1}
 .stage-dv-header{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:2px}
 .stage-dv-label{font-size:8.5px;letter-spacing:0.5px;color:var(--mc-text-dim)}
+.stage-dv-status{font-size:7px;letter-spacing:0.5px;text-transform:uppercase;margin-left:4px}
+.stage-dv-status.active{color:#4fc3f7}
+.stage-dv-status.pending{color:var(--mc-text-dim)}
+.stage-dv-status.depleted{color:rgba(255,255,255,0.25)}
 .stage-dv-value{font-size:11px;font-weight:700;color:var(--mc-text-bright);letter-spacing:0.5px}
 .stage-dv-bar-bg{height:6px;background:rgba(255,255,255,0.08);border-radius:3px;overflow:hidden}
 .stage-dv-bar-fill{height:100%;border-radius:3px;transition:width 0.5s}
 .stage-dv-sub{font-size:8px;color:var(--mc-text-dim);margin-top:1px;display:flex;justify-content:space-between}
+.stage-dv-offnominal{color:#ff9800;font-size:7px;margin-top:1px;display:none}
+.stage-dv-entry.offnominal .stage-dv-offnominal{display:block}
+.stage-dv-entry.offnominal .stage-dv-bar-fill{background:#ff9800 !important}
 
 /* ==========================================================================
    CANVAS PANELS (center)
@@ -984,10 +994,10 @@ function updateStageDVBars(stages) {
     _lastStageCount = stages.length;
     container.innerHTML = stages.map((stg, i) => {
       const color = STAGE_COLORS[i % STAGE_COLORS.length];
-      const label = stg.label || ('STAGE ' + stg.index);
+      const label = stg.label || ('Stage ' + stg.index);
       return `<div class="stage-dv-entry" id="stage-dv-${i}">
         <div class="stage-dv-header">
-          <span class="stage-dv-label">${label}</span>
+          <span class="stage-dv-label">${label}<span class="stage-dv-status" id="stage-dv-status-${i}"></span></span>
           <span class="stage-dv-value" id="stage-dv-val-${i}">—</span>
         </div>
         <div class="stage-dv-bar-bg">
@@ -997,23 +1007,38 @@ function updateStageDVBars(stages) {
           <span id="stage-dv-fuel-${i}">—</span>
           <span id="stage-dv-burn-${i}">—</span>
         </div>
+        <div class="stage-dv-offnominal" id="stage-dv-offnom-${i}"></div>
       </div>`;
     }).join('');
   }
 
   stages.forEach((stg, i) => {
     const dvVac = stg.dv_vac || 0;
-    const fuelMass = stg.fuel_mass || 0;
-    const totalMass = (stg.fuel_mass || 0) + (stg.dry_mass || 0);
-    const fuelPct = totalMass > 0 ? (fuelMass / totalMass) * 100 : 0;
+    const dvInitial = stg.dv_initial || 1;
+    const dvPct = dvInitial > 0 ? (dvVac / dvInitial) * 100 : 0;
     const burnTime = stg.burn_time || 0;
+    const status = stg.status || 'active';
 
+    const offnominal = stg.offnominal || false;
+    const entryEl = el('stage-dv-' + i);
+    if (entryEl) {
+      entryEl.className = 'stage-dv-entry ' + status + (offnominal ? ' offnominal' : '');
+    }
+    const offnomEl = el('stage-dv-offnom-' + i);
+    if (offnomEl) {
+      offnomEl.textContent = offnominal ? (stg.offnominal_reason || 'OFF-NOMINAL') : '';
+    }
+    const statusEl = el('stage-dv-status-' + i);
+    if (statusEl) {
+      statusEl.textContent = ' ' + status.toUpperCase();
+      statusEl.className = 'stage-dv-status ' + status;
+    }
     const valEl = el('stage-dv-val-' + i);
-    if (valEl) valEl.textContent = dvVac.toFixed(0) + ' m/s';
+    if (valEl) valEl.textContent = dvVac.toFixed(0) + ' / ' + dvInitial.toFixed(0) + ' m/s';
     const fillEl = el('stage-dv-fill-' + i);
-    if (fillEl) fillEl.style.width = Math.max(0, Math.min(100, fuelPct)) + '%';
+    if (fillEl) fillEl.style.width = Math.max(0, Math.min(100, dvPct)) + '%';
     const fuelEl = el('stage-dv-fuel-' + i);
-    if (fuelEl) fuelEl.textContent = fuelMass.toFixed(2) + ' t fuel';
+    if (fuelEl) fuelEl.textContent = (stg.fuel_mass || 0).toFixed(2) + ' t fuel';
     const burnEl = el('stage-dv-burn-' + i);
     if (burnEl) burnEl.textContent = burnTime.toFixed(0) + 's burn';
   });
