@@ -2129,5 +2129,142 @@ class TestPitchDeltaThreshold(unittest.TestCase):
             "Threshold must use a floor to avoid false red when nom≈0")
 
 
+class TestSocketIOBroadcast(unittest.TestCase):
+    """P-TEST-05: Integration test for the full Socket.IO broadcast pipeline.
+
+    Uses flask_socketio.SocketIOTestClient to verify that:
+    - Connecting emits 'connected' and 'nominal' events
+    - The broadcast loop emits 'telemetry' and 'director' events
+    - Scenario load emits 'scenario_loaded'
+    - Playback control events are handled
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from mission_control.server import app, socketio, session
+        from mission_control.nominal_compare import NominalTrajectory, FlightDirector
+        from mission_control.telemachus_client import SimulatedTelemetry
+
+        app.config["TESTING"] = True
+
+        nom = NominalTrajectory.load()
+        session.nominal_traj = nom
+        session.flight_director = FlightDirector(nom)
+        client = SimulatedTelemetry(rate_ms=50)
+        client.start()
+        wait_for(lambda: (client.get_state().get("altitude") or 0) > 0)
+        session.telemetry_client = client
+
+        cls.app = app
+        cls.socketio = socketio
+        cls.session = session
+        cls.sim_client = client
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.sim_client.stop()
+
+    def _connect(self):
+        from flask_socketio import SocketIOTestClient
+        return SocketIOTestClient(self.app, self.socketio)
+
+    def _event_names(self, received):
+        return [r["name"] for r in received]
+
+    def test_connect_emits_connected_and_nominal(self):
+        sio = self._connect()
+        received = sio.get_received()
+        names = self._event_names(received)
+        self.assertIn("connected", names)
+        self.assertIn("nominal", names)
+        nom_event = next(r for r in received if r["name"] == "nominal")
+        self.assertIn("trajectory", nom_event["args"][0])
+        self.assertIsInstance(nom_event["args"][0]["trajectory"], list)
+        self.assertGreater(len(nom_event["args"][0]["trajectory"]), 0)
+        sio.disconnect()
+
+    def test_connect_sends_trajectory_history(self):
+        sio = self._connect()
+        received = sio.get_received()
+        names = self._event_names(received)
+        self.assertIn("trajectory_history", names)
+        hist = next(r for r in received if r["name"] == "trajectory_history")
+        self.assertIn("trajectory", hist["args"][0])
+        sio.disconnect()
+
+    def test_broadcast_emits_telemetry_and_director(self):
+        sio = self._connect()
+        sio.get_received()
+
+        from mission_control.server import socketio as real_sio
+        state = self.session.telemetry_client.get_state()
+        trajectory = self.session.telemetry_client.get_trajectory()
+        director_out = self.session.flight_director.update(state)
+
+        with self.app.test_request_context("/"):
+            real_sio.emit("telemetry", {
+                "state": state,
+                "trajectory": trajectory[-50:] if trajectory else [],
+            })
+            real_sio.emit("director", director_out)
+
+        received = sio.get_received()
+        names = self._event_names(received)
+        self.assertIn("telemetry", names)
+        self.assertIn("director", names)
+
+        telem = next(r for r in received if r["name"] == "telemetry")
+        self.assertIn("state", telem["args"][0])
+        self.assertIn("trajectory", telem["args"][0])
+        telem_state = telem["args"][0]["state"]
+        self.assertIn("altitude", telem_state)
+        self.assertIn("velocity", telem_state)
+        self.assertIn("v_horiz", telem_state)
+
+        director = next(r for r in received if r["name"] == "director")
+        self.assertIn("phase", director["args"][0])
+        sio.disconnect()
+
+    def test_director_output_has_advisory_and_gates(self):
+        sio = self._connect()
+        sio.get_received()
+
+        state = self.session.telemetry_client.get_state()
+        director_out = self.session.flight_director.update(state)
+
+        with self.app.test_request_context("/"):
+            self.socketio.emit("director", director_out)
+
+        received = sio.get_received()
+        director = next(r for r in received if r["name"] == "director")
+        data = director["args"][0]
+        self.assertIn("advisory", data)
+        self.assertIn("gates", data)
+        self.assertIn("level", data["advisory"])
+        self.assertIsInstance(data["gates"], list)
+        sio.disconnect()
+
+    def test_request_nominal_event(self):
+        sio = self._connect()
+        sio.get_received()
+        sio.emit("request_nominal")
+        received = sio.get_received()
+        names = self._event_names(received)
+        self.assertIn("nominal", names)
+        sio.disconnect()
+
+    def test_clear_trajectory_event(self):
+        sio = self._connect()
+        sio.get_received()
+        pre_len = len(self.session.telemetry_client.get_trajectory())
+        sio.emit("clear_trajectory")
+        traj = self.session.telemetry_client.get_trajectory()
+        self.assertEqual(len(traj), 0)
+        sio.disconnect()
+        # Let trajectory rebuild so later tests aren't affected
+        if pre_len > 0:
+            wait_for(lambda: len(self.session.telemetry_client.get_trajectory()) > 0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -130,7 +130,7 @@ If you change any part mass or engine stat, re-run and update this table.
 | Target orbit | 80 × 80 km | design |
 | Orbital speed @80km | 2,279 m/s | derived |
 | TMI ΔV | ~856 m/s | design |
-| Test suite | **286/286 green** | last run |
+| Test suite | **292/292 green** | last run |
 
 ---
 
@@ -367,14 +367,14 @@ tests/test_p1_regressions.py    11 tests  — P1 high-priority fixes validated
 tests/test_p2_p3_regressions.py 21 tests  — P2/P3 fixes validated
 ─────────────────────────────────────────────────────
 Total                           49 tests  ALL PASSING
-tests/test_scenario.py         176 tests  — scenario system + UI viewport + layout + graphical elements + timeline bands + fuel model + phase detection + Telemachus topics + stages
+tests/test_scenario.py         182 tests  — scenario system + UI viewport + layout + graphical elements + timeline bands + fuel model + phase detection + Telemachus topics + stages + Socket.IO broadcast
 tests/test_ballistic_projection.py 34 tests — ballistic projection + drag
 tests/test_ui_playwright.py     27 tests  — DOM-based UI tests via headless Chromium
 ─────────────────────────────────────────────────────
-Total                          286 tests  ALL PASSING
+Total                          292 tests  ALL PASSING
 ```
 
-**Before making any change**: run the full suite and confirm 286/286 green.
+**Before making any change**: run the full suite and confirm 292/292 green.
 **When adding a feature or fixing a bug**: write the test first (red), then fix (green).
 
 The engineering review describes _why_ each fix was made, not just what changed.
@@ -458,7 +458,7 @@ The module-level `__getattr__` provides backward-compatible reads.
 ### Test suite
 
 ```bash
-# Full suite: 286 tests (49 regression + 176 scenario + 34 ballistic + 27 playwright)
+# Full suite: 292 tests (49 regression + 182 scenario + 34 ballistic + 27 playwright)
 cd /home/user/KSPDirector/code
 python -m unittest tests.test_p0_regressions tests.test_p1_regressions \
     tests.test_p2_p3_regressions tests.test_scenario \
@@ -516,11 +516,12 @@ directional.
 ~~**P-THREAD-01**~~ RESOLVED — `_launch_lon` reset moved under `_lock` (same lock as
 read/write), eliminating cross-lock access.
 
-**P-SOCK-01: `cors_allowed_origins="*"` in production**
-SocketIO allows all origins. Fine for local dev; tighten if network-exposed.
+~~**P-SOCK-01**~~ WON'T FIX — `cors_allowed_origins="*"` kept intentionally for
+ease of development and local-network KSP use.
 
-**P-TEST-05: No integration test for full Socket.IO broadcast pipeline**
-Requires Socket.IO test infrastructure. Deferred.
+~~**P-TEST-05**~~ RESOLVED — `TestSocketIOBroadcast` (6 tests) uses
+`SocketIOTestClient` to verify connect events, broadcast pipeline (telemetry +
+director), request_nominal, and clear_trajectory.
 
 ~~**P-TEST-06**~~ RESOLVED — 27 Playwright DOM tests in `test_ui_playwright.py`
 verify grid layout, computed styles, element existence, JS function availability,

@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- 6 Socket.IO broadcast integration tests (`TestSocketIOBroadcast`): connect events, telemetry/director broadcast, request_nominal, clear_trajectory — using `SocketIOTestClient`.
+
 ## [1.1.1] — 2026-06-25
 
 ### Fixed
