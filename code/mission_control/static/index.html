@@ -994,7 +994,7 @@ function updateStageDVBars(stages) {
     _lastStageCount = stages.length;
     container.innerHTML = stages.map((stg, i) => {
       const color = STAGE_COLORS[i % STAGE_COLORS.length];
-      const label = stg.label || ('Stage ' + stg.index);
+      const label = esc(stg.label || ('Stage ' + stg.index));
       return `<div class="stage-dv-entry" id="stage-dv-${i}">
         <div class="stage-dv-header">
           <span class="stage-dv-label">${label}<span class="stage-dv-status" id="stage-dv-status-${i}"></span></span>
@@ -1064,10 +1064,10 @@ function updateDirectorPanel() {
   if (d.gates && d.gates.length) {
     el('gates-list').innerHTML = d.gates.map(g => `
       <div class="gate-row">
-        <div class="gate-indicator ${g.status}"></div>
-        <span class="gate-phase">${g.phase}</span>
-        <span class="gate-status-text ${g.status}">${g.status}</span>
-        <span class="gate-detail">${g.detail || ''}</span>
+        <div class="gate-indicator ${esc(g.status)}"></div>
+        <span class="gate-phase">${esc(g.phase)}</span>
+        <span class="gate-status-text ${esc(g.status)}">${esc(g.status)}</span>
+        <span class="gate-detail">${esc(g.detail || '')}</span>
       </div>
     `).join('');
   }
@@ -1085,14 +1085,15 @@ function updateDirectorPanel() {
     el('nom-compare').innerHTML = rows.map(r => {
       if (r.nom == null) return '';
       const delta = r.actual - r.nom;
-      const deltaClass = Math.abs(delta) < r.nom*0.1 ? 'ok' : Math.abs(delta) < r.nom*0.25 ? 'warn' : 'bad';
+      const thresh = Math.max(Math.abs(r.nom), 5);
+      const deltaClass = Math.abs(delta) < thresh*0.1 ? 'ok' : Math.abs(delta) < thresh*0.25 ? 'warn' : 'bad';
       const sign = delta > 0 ? '+' : '';
       return `<div class="nom-row">
-        <span class="nom-label">${r.label}</span>
+        <span class="nom-label">${esc(r.label)}</span>
         <div class="nom-pair">
           <span class="nom-actual">${r.actual.toFixed(r.dec)}</span>
           <span class="nom-nominal">${r.nom.toFixed(r.dec)}</span>
-          <span class="nom-delta ${deltaClass}">${sign}${delta.toFixed(r.dec)}${r.unit}</span>
+          <span class="nom-delta ${deltaClass}">${sign}${delta.toFixed(r.dec)}${esc(r.unit)}</span>
         </div>
       </div>`;
     }).join('');
@@ -1521,6 +1522,7 @@ function playAdvisoryAlert(level) {
 // HELPERS
 // ---------------------------------------------------------------
 function el(id) { return document.getElementById(id); }
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
 function setVal(id, val, cls) {
   const e = el(id);
@@ -1667,12 +1669,12 @@ function updateScenarioSummary(summary) {
   const sec = el('sc-summary-section');
   sec.style.display = '';
   el('sc-summary').innerHTML =
-    '<b>Mass:</b> ' + summary.liftoff_mass_t + ' t &nbsp; ' +
-    '<b>TWR:</b> ' + summary.pad_twr_asl + '<br/>' +
-    '<b>SRB burn:</b> ' + summary.srb_burn_time_s + 's &nbsp; ' +
-    '<b>Stage dV:</b> ' + summary.mission_stage_dv_ms + ' m/s<br/>' +
-    '<b>Apo @B/O:</b> ' + summary.apoapsis_km + ' km &nbsp; ' +
-    '<b>Pe:</b> ' + summary.periapsis_km + ' km';
+    '<b>Mass:</b> ' + esc(String(summary.liftoff_mass_t)) + ' t &nbsp; ' +
+    '<b>TWR:</b> ' + esc(String(summary.pad_twr_asl)) + '<br/>' +
+    '<b>SRB burn:</b> ' + esc(String(summary.srb_burn_time_s)) + 's &nbsp; ' +
+    '<b>Stage dV:</b> ' + esc(String(summary.mission_stage_dv_ms)) + ' m/s<br/>' +
+    '<b>Apo @B/O:</b> ' + esc(String(summary.apoapsis_km)) + ' km &nbsp; ' +
+    '<b>Pe:</b> ' + esc(String(summary.periapsis_km)) + ' km';
 }
 
 function scPlay()   { fetch('/api/scenario/start',  { method:'POST' }); }

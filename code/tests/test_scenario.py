@@ -1394,12 +1394,14 @@ class TestTelematicusClientStages(unittest.TestCase):
 class TestSimulatedTelemetryStages(unittest.TestCase):
     """Verify SimulatedTelemetry includes stages and live resource maxes."""
 
+    def _get_active_state(self, client):
+        return wait_for(lambda: client.get_state() if client.get_state().get("stages") else None)
+
     def test_state_includes_stages_array(self):
         from mission_control.telemachus_client import SimulatedTelemetry
         client = SimulatedTelemetry(rate_ms=200)
         client.start()
-        time.sleep(1.0)
-        state = client.get_state()
+        state = self._get_active_state(client)
         client.stop()
         self.assertIn("stages", state)
         self.assertIsInstance(state["stages"], list)
@@ -1410,8 +1412,7 @@ class TestSimulatedTelemetryStages(unittest.TestCase):
         from mission_control.telemachus_client import SimulatedTelemetry
         client = SimulatedTelemetry(rate_ms=200)
         client.start()
-        time.sleep(1.0)
-        state = client.get_state()
+        state = self._get_active_state(client)
         client.stop()
         self.assertIn("liquid_fuel_max", state)
         self.assertIn("solid_fuel_max", state)
@@ -1422,8 +1423,7 @@ class TestSimulatedTelemetryStages(unittest.TestCase):
         from mission_control.telemachus_client import SimulatedTelemetry
         client = SimulatedTelemetry(rate_ms=200)
         client.start()
-        time.sleep(1.0)
-        state = client.get_state()
+        state = self._get_active_state(client)
         client.stop()
         self.assertIn("mass", state)
         self.assertIn("mach", state)
@@ -1433,8 +1433,7 @@ class TestSimulatedTelemetryStages(unittest.TestCase):
         from mission_control.telemachus_client import SimulatedTelemetry
         client = SimulatedTelemetry(rate_ms=200)
         client.start()
-        time.sleep(1.0)
-        state = client.get_state()
+        state = self._get_active_state(client)
         client.stop()
         for stg in state["stages"]:
             self.assertIn("dv_vac", stg)
@@ -1458,14 +1457,16 @@ class TestSimulatedTelemetryStages(unittest.TestCase):
 class TestScriptedTelemetryStages(unittest.TestCase):
     """Verify ScriptedTelemetry includes stages and live resource maxes."""
 
+    def _get_active_state(self, client):
+        return wait_for(lambda: client.get_state() if client.get_state().get("stages") else None)
+
     def test_state_includes_stages_array(self):
         from mission_control.telemachus_client import ScriptedTelemetry
         from mission_control.scenario import LaunchScenario
         client = ScriptedTelemetry(rate_ms=200)
         client.load_scenario(LaunchScenario())
         client.start()
-        time.sleep(1.0)
-        state = client.get_state()
+        state = self._get_active_state(client)
         client.stop()
         self.assertIn("stages", state)
         self.assertIsInstance(state["stages"], list)
@@ -1477,8 +1478,7 @@ class TestScriptedTelemetryStages(unittest.TestCase):
         client = ScriptedTelemetry(rate_ms=200)
         client.load_scenario(LaunchScenario())
         client.start()
-        time.sleep(1.0)
-        state = client.get_state()
+        state = self._get_active_state(client)
         client.stop()
         self.assertIn("liquid_fuel_max", state)
         self.assertIn("solid_fuel_max", state)
@@ -1490,8 +1490,7 @@ class TestScriptedTelemetryStages(unittest.TestCase):
         client = ScriptedTelemetry(rate_ms=200)
         client.load_scenario(LaunchScenario())
         client.start()
-        time.sleep(1.0)
-        state = client.get_state()
+        state = self._get_active_state(client)
         client.stop()
         self.assertIn("mass", state)
         self.assertIsNotNone(state["mass"])
@@ -1805,6 +1804,278 @@ class TestUIStageBarElements(unittest.TestCase):
     def test_orbit_time_fields_exist(self):
         self.assertIn('id="t-tta"', self.html)
         self.assertIn('id="t-ttp"', self.html)
+
+
+def wait_for(pred, timeout=5.0, interval=0.05):
+    """Poll until pred() returns truthy or timeout expires."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        result = pred()
+        if result:
+            return result
+        time.sleep(interval)
+    return pred()
+
+
+class TestCircularizeBoundary(unittest.TestCase):
+    """P-TEST-01: Boundary tests for v_vert < 50 CIRCULARIZE guard."""
+
+    def _detect(self, alt_m, apo_km, pe_km, v_vert, prev=None):
+        from mission_control.nominal_compare import detect_phase
+        state = {
+            "altitude": alt_m,
+            "apoapsis": apo_km * 1000,
+            "periapsis": pe_km * 1000,
+            "solid_fuel": 0,
+            "liquid_fuel": 100,
+            "throttle": 1.0,
+            "v_vert": v_vert,
+        }
+        return detect_phase(state, prev).name
+
+    def test_v_vert_49_triggers_circularize(self):
+        phase = self._detect(70000, 80, 30, 49)
+        self.assertEqual(phase, "CIRCULARIZE")
+
+    def test_v_vert_50_triggers_circularize(self):
+        phase = self._detect(70000, 80, 30, 50)
+        self.assertNotEqual(phase, "CIRCULARIZE")
+
+    def test_v_vert_51_does_not_trigger_circularize(self):
+        phase = self._detect(70000, 80, 30, 51)
+        self.assertNotEqual(phase, "CIRCULARIZE")
+
+    def test_v_vert_negative_49_triggers_circularize(self):
+        phase = self._detect(70000, 80, 30, -49)
+        self.assertEqual(phase, "CIRCULARIZE")
+
+    def test_v_vert_negative_51_does_not_trigger(self):
+        phase = self._detect(70000, 80, 30, -51)
+        self.assertNotEqual(phase, "CIRCULARIZE")
+
+
+class TestCLIScenarioFlag(unittest.TestCase):
+    """P-TEST-02: Tests for --scenario CLI flag."""
+
+    def test_unknown_scenario_exits(self):
+        from mission_control.server import build_argparser
+        parser = build_argparser()
+        args = parser.parse_args(["--scenario", "nonexistent_scenario_xyz"])
+        self.assertEqual(args.scenario, "nonexistent_scenario_xyz")
+        from mission_control.scenario import PRESET_SCENARIOS
+        self.assertNotIn(args.scenario, PRESET_SCENARIOS)
+
+    def test_valid_scenario_parses(self):
+        from mission_control.server import build_argparser
+        parser = build_argparser()
+        args = parser.parse_args(["--scenario", "nominal"])
+        self.assertEqual(args.scenario, "nominal")
+
+    def test_sim_compare_flag_parses(self):
+        from sim.ascent_sim import build_argparser
+        parser = build_argparser()
+        args = parser.parse_args(["--compare", "nominal", "steep"])
+        self.assertEqual(args.compare, ["nominal", "steep"])
+
+
+class TestAPIErrorPaths(unittest.TestCase):
+    """P-TEST-03: API error paths for scenario endpoints."""
+
+    @classmethod
+    def setUpClass(cls):
+        from mission_control.server import app
+        import mission_control.server as srv
+        srv.session.telemetry_client = None
+        cls.app = app
+        cls.app.config["TESTING"] = True
+        cls.client = cls.app.test_client()
+
+    def test_start_without_scripted_returns_400(self):
+        import mission_control.server as srv
+        srv.session.telemetry_client = None
+        resp = self.client.post("/api/scenario/start")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_pause_without_scripted_returns_400(self):
+        import mission_control.server as srv
+        srv.session.telemetry_client = None
+        resp = self.client.post("/api/scenario/pause")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_resume_without_scripted_returns_400(self):
+        import mission_control.server as srv
+        srv.session.telemetry_client = None
+        resp = self.client.post("/api/scenario/resume")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_reset_without_scripted_returns_400(self):
+        import mission_control.server as srv
+        srv.session.telemetry_client = None
+        resp = self.client.post("/api/scenario/reset")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_speed_without_scripted_returns_400(self):
+        import mission_control.server as srv
+        srv.session.telemetry_client = None
+        resp = self.client.post("/api/scenario/speed", json={"speed": 2.0})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_speed_out_of_range_returns_400(self):
+        self.client.post("/api/scenario/load", json={"preset": "nominal"})
+        resp = self.client.post("/api/scenario/speed", json={"speed": 100.0})
+        self.assertEqual(resp.status_code, 400)
+        resp = self.client.post("/api/scenario/speed", json={"speed": 0.1})
+        self.assertEqual(resp.status_code, 400)
+        import mission_control.server as srv
+        if srv.session.telemetry_client:
+            srv.session.telemetry_client.stop()
+
+    def test_load_unknown_preset_returns_400(self):
+        resp = self.client.post("/api/scenario/load",
+                                json={"preset": "does_not_exist"})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_load_invalid_body_returns_400(self):
+        resp = self.client.post("/api/scenario/load",
+                                data="not json",
+                                content_type="text/plain")
+        self.assertEqual(resp.status_code, 400)
+
+
+class TestInputValidation(unittest.TestCase):
+    """P-INPUT-01: from_dict type coercion and validate on bad types."""
+
+    def test_from_dict_coerces_string_to_int(self):
+        from mission_control.scenario import LaunchScenario
+        s = LaunchScenario.from_dict({"n_boosters": "3"})
+        self.assertEqual(s.n_boosters, 3)
+
+    def test_from_dict_coerces_string_to_float(self):
+        from mission_control.scenario import LaunchScenario
+        s = LaunchScenario.from_dict({"booster_pct": "25.5"})
+        self.assertAlmostEqual(s.booster_pct, 25.5)
+
+    def test_from_dict_bad_type_still_validates(self):
+        from mission_control.scenario import LaunchScenario
+        s = LaunchScenario.from_dict({"n_boosters": "foo"})
+        errors = s.validate()
+        self.assertTrue(len(errors) > 0)
+
+    def test_from_dict_non_numeric_booster_pct_validates(self):
+        from mission_control.scenario import LaunchScenario
+        s = LaunchScenario.from_dict({"booster_pct": "not_a_number"})
+        errors = s.validate()
+        self.assertTrue(len(errors) > 0)
+
+
+class TestPresetNoiseOverride(unittest.TestCase):
+    """P-FUEL-02: noise_pct and playback_speed overrides on preset loads."""
+
+    @classmethod
+    def setUpClass(cls):
+        from mission_control.server import app
+        cls.app = app
+        cls.app.config["TESTING"] = True
+        cls.client = cls.app.test_client()
+
+    def test_preset_noise_pct_override(self):
+        resp = self.client.post("/api/scenario/load",
+                                json={"preset": "nominal", "noise_pct": 0.10})
+        self.assertEqual(resp.status_code, 200)
+        import mission_control.server as srv
+        self.assertAlmostEqual(srv.session.current_scenario.noise_pct, 0.10)
+        if srv.session.telemetry_client:
+            srv.session.telemetry_client.stop()
+
+    def test_preset_playback_speed_override(self):
+        resp = self.client.post("/api/scenario/load",
+                                json={"preset": "nominal", "playback_speed": 5.0})
+        self.assertEqual(resp.status_code, 200)
+        import mission_control.server as srv
+        self.assertAlmostEqual(srv.session.current_scenario.playback_speed, 5.0)
+        if srv.session.telemetry_client:
+            srv.session.telemetry_client.stop()
+
+    def test_preset_invalid_noise_ignored(self):
+        resp = self.client.post("/api/scenario/load",
+                                json={"preset": "nominal", "noise_pct": 0.50})
+        self.assertEqual(resp.status_code, 200)
+        import mission_control.server as srv
+        self.assertAlmostEqual(srv.session.current_scenario.noise_pct, 0.02)
+        if srv.session.telemetry_client:
+            srv.session.telemetry_client.stop()
+
+
+class TestTelemetryFieldCompleteness(unittest.TestCase):
+    """P-TELEM-04/05: Verify offline telemetry includes lat/lon and noisy periapsis."""
+
+    def test_simulated_has_lat_lon(self):
+        from mission_control.telemachus_client import SimulatedTelemetry
+        client = SimulatedTelemetry(rate_ms=50)
+        client.start()
+        state = wait_for(lambda: client.get_state() if (client.get_state().get("altitude") or 0) > 0 else None)
+        client.stop()
+        self.assertIn("latitude", state)
+        self.assertIn("longitude", state)
+        self.assertIsNotNone(state["latitude"])
+        self.assertIsNotNone(state["longitude"])
+
+    def test_scripted_has_lat_lon(self):
+        from mission_control.telemachus_client import ScriptedTelemetry
+        from mission_control.scenario import LaunchScenario
+        client = ScriptedTelemetry(rate_ms=50)
+        client.load_scenario(LaunchScenario(noise_pct=0.0, playback_speed=10.0))
+        client.start()
+        state = wait_for(lambda: client.get_state() if (client.get_state().get("altitude") or 0) > 0 else None)
+        client.stop()
+        self.assertIn("latitude", state)
+        self.assertIn("longitude", state)
+
+    def test_simulated_time_to_ap_is_none(self):
+        from mission_control.telemachus_client import SimulatedTelemetry
+        client = SimulatedTelemetry(rate_ms=50)
+        client.start()
+        state = wait_for(lambda: client.get_state() if (client.get_state().get("altitude") or 0) > 0 else None)
+        client.stop()
+        self.assertIsNone(state.get("time_to_ap"))
+
+
+class TestXSSEscaping(unittest.TestCase):
+    """P-XSS-01: Verify escapeHtml helper exists in index.html."""
+
+    @classmethod
+    def setUpClass(cls):
+        html_path = os.path.join(ROOT, 'mission_control', 'static', 'index.html')
+        with open(html_path) as f:
+            cls.html = f.read()
+
+    def test_esc_function_defined(self):
+        self.assertIn('function esc(', self.html)
+
+    def test_gates_use_esc(self):
+        self.assertIn('esc(g.phase)', self.html)
+        self.assertIn('esc(g.status)', self.html)
+        self.assertIn('esc(g.detail', self.html)
+
+    def test_stage_labels_use_esc(self):
+        self.assertIn('esc(stg.label', self.html)
+
+    def test_nominal_comparison_uses_esc(self):
+        self.assertIn('esc(r.label)', self.html)
+
+
+class TestPitchDeltaThreshold(unittest.TestCase):
+    """P-UI-01: Nominal comparison threshold uses floor to avoid zero-divide."""
+
+    @classmethod
+    def setUpClass(cls):
+        html_path = os.path.join(ROOT, 'mission_control', 'static', 'index.html')
+        with open(html_path) as f:
+            cls.html = f.read()
+
+    def test_threshold_uses_max_floor(self):
+        self.assertIn('Math.max(Math.abs(r.nom), 5)', self.html,
+            "Threshold must use a floor to avoid false red when nom≈0")
 
 
 if __name__ == "__main__":

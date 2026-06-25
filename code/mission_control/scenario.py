@@ -65,12 +65,25 @@ class LaunchScenario:
 
     @classmethod
     def from_dict(cls, d: dict) -> LaunchScenario:
-        known_fields = {
-            "name", "booster_type", "n_boosters", "booster_pct",
-            "extra_payload", "cd", "area_base", "pitch_program",
-            "playback_speed", "noise_pct",
+        _COERCE = {
+            "name": str,
+            "booster_type": str,
+            "n_boosters": int,
+            "booster_pct": float,
+            "extra_payload": float,
+            "cd": float,
+            "area_base": float,
+            "pitch_program": str,
+            "playback_speed": float,
+            "noise_pct": float,
         }
-        filtered = {k: v for k, v in d.items() if k in known_fields}
+        filtered = {}
+        for k, v in d.items():
+            if k in _COERCE:
+                try:
+                    filtered[k] = _COERCE[k](v)
+                except (TypeError, ValueError):
+                    filtered[k] = v
         return cls(**filtered)
 
     def validate(self) -> list[str]:
@@ -79,24 +92,23 @@ class LaunchScenario:
             errors.append(
                 f"booster_type '{self.booster_type}' not in {list(ENGINES.keys())}"
             )
-        if not (0 <= self.n_boosters <= 6):
-            errors.append(f"n_boosters must be 0-6, got {self.n_boosters}")
-        if not (1 <= self.booster_pct <= 100):
-            errors.append(f"booster_pct must be 1-100, got {self.booster_pct}")
+        def _check_range(name, val, lo, hi):
+            try:
+                if not (lo <= val <= hi):
+                    errors.append(f"{name} must be {lo}-{hi}, got {val}")
+            except TypeError:
+                errors.append(f"{name} must be numeric, got {type(val).__name__}")
+        _check_range("n_boosters", self.n_boosters, 0, 6)
+        _check_range("booster_pct", self.booster_pct, 1, 100)
         if self.pitch_program not in PITCH_PROGRAMS:
             errors.append(
                 f"pitch_program '{self.pitch_program}' not in {list(PITCH_PROGRAMS.keys())}"
             )
-        if not (0.25 <= self.playback_speed <= 10.0):
-            errors.append(f"playback_speed must be 0.25-10.0, got {self.playback_speed}")
-        if not (0.0 <= self.noise_pct <= 0.20):
-            errors.append(f"noise_pct must be 0.0-0.20, got {self.noise_pct}")
-        if not (0.0 <= self.extra_payload <= 2.0):
-            errors.append(f"extra_payload must be 0.0-2.0, got {self.extra_payload}")
-        if not (0.05 <= self.cd <= 1.0):
-            errors.append(f"cd must be 0.05-1.0, got {self.cd}")
-        if not (0.5 <= self.area_base <= 5.0):
-            errors.append(f"area_base must be 0.5-5.0, got {self.area_base}")
+        _check_range("playback_speed", self.playback_speed, 0.25, 10.0)
+        _check_range("noise_pct", self.noise_pct, 0.0, 0.20)
+        _check_range("extra_payload", self.extra_payload, 0.0, 2.0)
+        _check_range("cd", self.cd, 0.05, 1.0)
+        _check_range("area_base", self.area_base, 0.5, 5.0)
         return errors
 
 
