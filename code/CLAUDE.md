@@ -539,6 +539,43 @@ and XSS escaping via headless Chromium. Regex tests remain as source-level check
 ~~**P-UI-01**~~ RESOLVED — threshold now uses `Math.max(Math.abs(r.nom), 5)` as floor
 to prevent false red when nominal value ≈ 0.
 
+**P-COV-01** — Coverage augmentation (77% overall). Prioritized by impact:
+
+1. **`result_to_dict()` serialization** (`sim/ascent_sim.py`, 30% cov) — Pure-function
+   test: run `run_ascent()`, serialize, verify dict structure and key rounding. Covers
+   30+ lines with no I/O. Highest value-per-effort.
+2. **`TelematicusClient._handle_message()` parsing** (`telemachus_client.py`, 73% cov) —
+   Construct client without `start()`, feed raw JSON strings. Verify FIELD_MAP mapping,
+   `v_horiz` derivation, trajectory accumulation, MET reset detection, invalid JSON
+   handling, FIFO eviction at 10k points.
+3. **`broadcast_loop()` error handling** (`server.py`, 64% cov) — Mock telemetry client
+   to raise on `get_state()`, verify `director_error` emitted and loop continues.
+   Happy path: mock valid state, verify `telemetry` + `director` events emitted.
+4. **`orbital_params()` escape trajectory** (`sim/trajectory.py`, 95% cov) — Provide
+   velocity above escape velocity (~3,431 m/s at surface). Verify `(inf, -inf)` returned.
+   Also test zero velocity and `ecc_sq` clamping.
+5. **Server route handlers** (`server.py`) — Test `api_nominal()`, `api_state()`,
+   `api_trajectory()`, `api_clear_trajectory()` via Flask test client. Cover 503 paths
+   (no client) and success paths (mocked session). Verify `/api/constants` matches
+   `sim.constants`.
+6. **`generate_advisory()` TERRIER edge cases** (`nominal_compare.py`, 89% cov) —
+   Low-apoapsis WARNING (`apo<30, alt>15, lf<60%`), high-apoapsis CAUTION
+   (`apo>90, pe<60`), on-track NOMINAL (`apo>=70, pe>50`), CIRCULARIZE advisories,
+   BOOST/CORE fallback.
+7. **Socket.IO event handlers** (`server.py`) — Test `on_connect()`, `on_playback_control()`,
+   `on_clear_trajectory()` via `SocketIOTestClient`. Verify events emitted and
+   playback state applied.
+8. **CLI `main()` functions** (`ascent_sim.py`, `server.py`) — Test with `--json`,
+   `--compare`, `--table`, `--scenario` argv. Use `capsys` to capture output.
+9. **`SimulatedTelemetry._run()` loop** (`telemachus_client.py`) — Start with short rate,
+   sleep briefly, stop. Verify altitude > 0, trajectory accumulates, phase transitions
+   (BOOST→CORE), g_force populated, landed detection.
+10. **`_maybe_subscribe_stage_topics()` dynamic subscription** (`telemachus_client.py`) —
+    Set `dv_stage_count`, call with mock WebSocket. Verify topics generated, subscription
+    sent, `_stage_field_map` populated, duplicate calls are no-ops.
+
+See `tests/COVERAGE_REPORT.md` for full details and line-level uncovered areas.
+
 ---
 
 ## Known remaining rough edges (not bugs, just not polished)
