@@ -4,7 +4,7 @@
 # Mission control server
 flask>=3.0
 flask-socketio>=5.3
-eventlet>=0.35            # async backend for flask-socketio
+simple-websocket>=1.0     # WebSocket transport for threading mode
 
 # Telemachus WebSocket client
 websocket-client>=1.7

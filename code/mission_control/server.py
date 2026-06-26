@@ -65,7 +65,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__, static_folder=str(Path(__file__).parent / "static"))
 app.config["SECRET_KEY"] = os.environ.get("MC_SECRET_KEY", "perseus-dev-only-key")
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet",
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading",
                     logger=False, engineio_logger=False)
 
 
@@ -357,7 +357,6 @@ def broadcast_loop():
     Background greenlet: reads latest telemetry + director output and
     broadcasts to all connected Socket.IO clients at emit_rate_hz.
     """
-    import eventlet
     interval = 1.0 / session.emit_rate_hz
     while True:
         try:
@@ -385,7 +384,7 @@ def broadcast_loop():
                 })
             except Exception:
                 pass  # don't let the error-reporting itself crash the loop
-        eventlet.sleep(interval)
+        time.sleep(interval)
 
 
 # ---------------------------------------------------------------------------
@@ -464,8 +463,6 @@ def main(argv=None):
 
     session.telemetry_client.start()
 
-    # Start broadcast greenlet
-    import eventlet
     socketio.start_background_task(broadcast_loop)
 
     mode = "SIMULATION" if args.ksp_host is None else f"LIVE ({args.ksp_host})"

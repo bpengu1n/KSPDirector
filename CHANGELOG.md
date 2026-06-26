@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- **Migrated from eventlet to threading** for Socket.IO async mode. Removes the deprecated `eventlet` dependency; `broadcast_loop` now uses `time.sleep()` instead of `eventlet.sleep()`. No behavioral change — telemetry clients already used stdlib threads.
+
 ### Added
 - 6 Socket.IO broadcast integration tests (`TestSocketIOBroadcast`): connect events, telemetry/director broadcast, request_nominal, clear_trajectory — using `SocketIOTestClient`.
 

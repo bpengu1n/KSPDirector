@@ -62,7 +62,7 @@ code/                          (root — was percy_project_fixed/ in outputs)
 │   ├── SIM_API.md             Full simulation API reference
 │   └── MISSION_CONTROL.md     Server setup, Telemachus, Houston UI integration
 │
-└── requirements.txt           flask, flask-socketio, eventlet, websocket-client
+└── requirements.txt           flask, flask-socketio, simple-websocket, websocket-client
 ```
 
 Also present at the package root (outside `code/`):
