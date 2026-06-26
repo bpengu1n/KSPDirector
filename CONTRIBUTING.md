@@ -56,18 +56,22 @@ python -m pytest tests/ --cov=sim --cov=mission_control --cov-report=term-missin
 | `test_scenario.py` | 188 | Scenario system + integration |
 | `test_ballistic_projection.py` | 33 | Ballistic projection + drag |
 | `test_ui_playwright.py` | 230 | DOM-based UI tests (headless Chromium) |
-| `test_isolation.py` | 3 | Meta-test for UI test order independence |
+| `test_isolation.py` | 6 | Meta-test for test order independence |
 
 ### Test isolation
 
-Every Playwright UI test is fully atomic — an autouse `reset_ui` fixture
-resets all mutable JS state and DOM elements before each test. Tests pass
-in any execution order (natural, reversed, or random). The `test_isolation.py`
-meta-test enforces this.
+All tests are fully atomic — each starts from a clean baseline regardless of
+execution order. The `test_isolation.py` meta-test enforces this by running
+both UI and non-UI suites in natural, reversed, and random order.
 
-When writing new Playwright tests that mutate page state, you do **not** need
-to clean up after yourself — the fixture handles it. Just write the test as
-if it runs on a fresh page load.
+**Playwright UI tests** use an autouse `reset_ui` fixture that resets all
+mutable JS globals, DOM elements, and UI state before each test. When writing
+new Playwright tests that mutate page state, you do **not** need to clean up
+after yourself — the fixture handles it.
+
+**Non-UI tests** use function-scoped fixtures (`flask_test_client`, `socketio_env`)
+that create a fresh server session per test with proper teardown. Do not add
+inline cleanup to individual tests — the fixture handles it.
 
 ## CI
 
