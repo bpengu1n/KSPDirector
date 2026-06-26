@@ -8,3 +8,4 @@ build/
 .coverage
 *.svg
 !diagrams/*.svg
+code/tests/screenshots/
