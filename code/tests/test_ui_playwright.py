@@ -209,12 +209,16 @@ def test_get_canvas_size_caches(page):
 
 
 def test_invalidate_canvas_sizes(page):
-    page.evaluate("invalidateCanvasSizes(); getCanvasSize('globe-canvas')")
-    before = page.evaluate("Object.keys(_canvasSizes).length")
-    assert before > 0, "getCanvasSize should populate cache"
-    page.evaluate("invalidateCanvasSizes()")
-    after = page.evaluate("Object.keys(_canvasSizes).length")
-    assert after == 0, "invalidateCanvasSizes should clear cache"
+    result = page.evaluate("""(() => {
+        invalidateCanvasSizes();
+        getCanvasSize('globe-canvas');
+        const before = Object.keys(_canvasSizes).length;
+        invalidateCanvasSizes();
+        const after = Object.keys(_canvasSizes).length;
+        return {before, after};
+    })()""")
+    assert result["before"] > 0, "getCanvasSize should populate cache"
+    assert result["after"] == 0, "invalidateCanvasSizes should clear cache"
 
 
 # ===================================================================
