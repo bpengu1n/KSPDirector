@@ -159,6 +159,14 @@ def api_constants():
     })
 
 
+@app.route("/api/config")
+def api_config():
+    """Serve server-side configuration (mission name, etc.)."""
+    return jsonify({
+        "mission_name": getattr(session, '_mission_name', None),
+    })
+
+
 # ---------------------------------------------------------------------------
 # Scenario management routes
 # ---------------------------------------------------------------------------
@@ -412,6 +420,9 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--scenario", default=None, metavar="NAME",
                    help="Start with a preset scenario (e.g., 'nominal', 'steep_ascent'). "
                         "Implies simulation mode.")
+    p.add_argument("--mission-name", default=None, metavar="NAME",
+                   help="Custom mission name for branding (e.g., 'APOLLO 11'). "
+                        "Overrides 'PERSEUS 1' in the UI.")
     return p
 
 
@@ -419,6 +430,7 @@ def main(argv=None):
     parser = build_argparser()
     args = parser.parse_args(argv)
     session.emit_rate_hz = args.emit_rate
+    session._mission_name = args.mission_name
 
     # Load nominal trajectory
     logger.info("Computing nominal trajectory…")

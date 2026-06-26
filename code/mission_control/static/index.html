@@ -305,6 +305,136 @@ html,body{width:100%;height:100%;background:var(--mc-bg);color:var(--mc-text);
 ::-webkit-scrollbar{width:4px}
 ::-webkit-scrollbar-thumb{background:var(--mc-border);border-radius:2px}
 ::-webkit-scrollbar-track{background:transparent}
+
+/* ==========================================================================
+   ALERT FLASH (UX P1-6)
+   ========================================================================== */
+@keyframes alert-flash-caution{
+  0%{box-shadow:inset 0 0 0 0 transparent}
+  50%{box-shadow:inset 0 0 30px rgba(230,81,0,0.3)}
+  100%{box-shadow:inset 0 0 0 0 transparent}
+}
+@keyframes alert-flash-warning{
+  0%{box-shadow:inset 0 0 0 0 transparent}
+  50%{box-shadow:inset 0 0 40px rgba(183,28,28,0.4)}
+  100%{box-shadow:inset 0 0 0 0 transparent}
+}
+@keyframes alert-flash-abort{
+  0%{border-color:var(--mc-abort)}
+  50%{border-color:#ff1744;box-shadow:inset 0 0 60px rgba(198,40,40,0.5)}
+  100%{border-color:var(--mc-abort)}
+}
+#shell.alert-flash-CAUTION{animation:alert-flash-caution 0.8s ease-out}
+#shell.alert-flash-WARNING{animation:alert-flash-warning 0.8s ease-out}
+#shell.alert-flash-ABORT{border:2px solid var(--mc-abort);animation:alert-flash-abort 1s ease-in-out infinite}
+
+/* ==========================================================================
+   OBS OVERLAY MODE (UX P2-8)
+   ========================================================================== */
+body.overlay-mode{background:transparent !important}
+body.overlay-mode #shell{background:transparent !important;gap:0}
+body.overlay-mode #topbar,
+body.overlay-mode #left-panel,
+body.overlay-mode #center-panel,
+body.overlay-mode #right-panel,
+body.overlay-mode #timeline-bar,
+body.overlay-mode #scenario-panel,
+body.overlay-mode #loading-overlay{display:none !important}
+body.overlay-mode [data-panel].overlay-visible{
+  display:flex !important;flex-direction:column;
+  background:transparent !important;
+  grid-column:1/-1 !important;grid-row:1/-1 !important;
+  overflow:visible;
+}
+body.overlay-mode .canvas-panel{background:transparent !important}
+body.overlay-mode #advisory-box{background:rgba(0,0,0,0.6) !important}
+body.overlay-mode #gates-section{background:rgba(0,0,0,0.5);border-radius:4px;padding:12px}
+body.overlay-mode #nominal-section{background:rgba(0,0,0,0.5);border-radius:4px;padding:12px}
+
+/* ==========================================================================
+   EVENT LOG (UX KSP-06/07)
+   ========================================================================== */
+#event-log-section{
+  padding:10px 14px;border-top:1px solid var(--mc-border);
+  max-height:200px;overflow-y:auto;
+}
+.event-log-title{font-size:8.5px;letter-spacing:2px;color:var(--mc-text-dim);margin-bottom:8px;
+  display:flex;justify-content:space-between;align-items:center}
+.event-log-export{font-size:7px;cursor:pointer;color:var(--mc-teal-bright);letter-spacing:1px}
+.event-log-export:hover{color:var(--mc-text-bright)}
+.event-entry{font-size:8.5px;margin-bottom:3px;display:flex;gap:8px}
+.event-met{color:var(--mc-accent);min-width:70px;font-weight:700}
+.event-type{min-width:60px}
+.event-type.phase{color:var(--mc-teal-bright)}
+.event-type.gate{color:var(--mc-green-bright)}
+.event-type.advisory{color:var(--mc-yellow-bright)}
+.event-msg{color:var(--mc-text-dim)}
+
+/* ==========================================================================
+   PRE-LAUNCH CHECKLIST (UX P2-10)
+   ========================================================================== */
+#prelaunch-overlay{
+  position:fixed;inset:0;background:rgba(7,9,14,0.95);z-index:999;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  font-family:var(--mc-font-mono);transition:opacity 0.5s;
+}
+#prelaunch-overlay.hidden{opacity:0;pointer-events:none}
+.prelaunch-title{font-size:13px;letter-spacing:3px;color:var(--mc-accent);margin-bottom:20px}
+.prelaunch-countdown{font-size:60px;letter-spacing:5px;color:var(--mc-text-bright);margin-bottom:20px;font-weight:700}
+.checklist{list-style:none;margin-bottom:20px;min-width:300px}
+.checklist-item{
+  display:flex;align-items:center;gap:12px;padding:8px 14px;margin-bottom:4px;
+  border:1px solid var(--mc-border);border-radius:3px;cursor:pointer;
+  font-size:11px;letter-spacing:1px;color:var(--mc-text-dim);
+  transition:background 0.2s,border-color 0.2s;
+}
+.checklist-item:hover{background:var(--mc-panel-alt)}
+.checklist-item.checked{border-color:var(--mc-green);color:var(--mc-green-bright)}
+.checklist-item.checked .check-box{background:var(--mc-green);border-color:var(--mc-green)}
+.checklist-item.checked .check-box::after{content:'✓';color:#fff;font-size:10px}
+.check-box{
+  width:16px;height:16px;border:1.5px solid var(--mc-border);border-radius:2px;
+  display:flex;align-items:center;justify-content:center;flex-shrink:0;
+}
+.prelaunch-go-btn{
+  font-size:12px;letter-spacing:2px;padding:10px 30px;border-radius:4px;
+  background:var(--mc-green);color:var(--mc-text-bright);border:1px solid var(--mc-green-bright);
+  cursor:pointer;font-family:var(--mc-font-mono);font-weight:700;
+}
+.prelaunch-go-btn:hover{background:var(--mc-green-bright)}
+.prelaunch-dismiss{
+  font-size:8px;letter-spacing:1px;color:var(--mc-text-dim);cursor:pointer;
+  margin-top:12px;
+}
+.prelaunch-dismiss:hover{color:var(--mc-text-bright)}
+
+/* ==========================================================================
+   CONSUMABLES TRENDING (UX P3-11)
+   ========================================================================== */
+.consumables-row{
+  display:flex;justify-content:space-between;margin-top:4px;font-size:8.5px;
+}
+.consumables-label{color:var(--mc-text-dim);letter-spacing:0.5px}
+.consumables-value{color:var(--mc-teal-bright);font-weight:700}
+
+/* ==========================================================================
+   FLIGHT SCORE (UX P3-14)
+   ========================================================================== */
+#flight-score-overlay{
+  position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
+  background:rgba(14,20,32,0.95);border:1.5px solid var(--mc-accent);border-radius:8px;
+  padding:24px 32px;z-index:998;display:none;text-align:center;
+  font-family:var(--mc-font-mono);min-width:280px;
+}
+.score-title{font-size:10px;letter-spacing:3px;color:var(--mc-accent);margin-bottom:16px}
+.score-overall{font-size:48px;font-weight:700;color:var(--mc-text-bright);margin-bottom:8px}
+.score-grade{font-size:14px;letter-spacing:2px;margin-bottom:16px}
+.score-breakdown{display:flex;justify-content:space-around;gap:16px;margin-bottom:16px}
+.score-component{text-align:center}
+.score-component-label{font-size:8px;letter-spacing:1px;color:var(--mc-text-dim);margin-bottom:4px}
+.score-component-value{font-size:18px;font-weight:700;color:var(--mc-text-bright)}
+.score-dismiss{font-size:8px;letter-spacing:1px;color:var(--mc-text-dim);cursor:pointer}
+.score-dismiss:hover{color:var(--mc-text-bright)}
 </style>
 </head>
 <body>
@@ -331,6 +461,39 @@ html,body{width:100%;height:100%;background:var(--mc-bg);color:var(--mc-text);
 <style>
 @keyframes load-pulse{0%{width:0%}50%{width:80%}100%{width:100%}}
 </style>
+<!-- Pre-launch checklist (UX P2-10) -->
+<div id="prelaunch-overlay">
+  <div class="prelaunch-title">PRE-LAUNCH CHECKLIST</div>
+  <div class="prelaunch-countdown" id="prelaunch-countdown">T-10</div>
+  <ul class="checklist" id="checklist">
+    <li class="checklist-item" onclick="toggleCheck(this)"><div class="check-box"></div>TELEMETRY LINK</li>
+    <li class="checklist-item" onclick="toggleCheck(this)"><div class="check-box"></div>VEHICLE CONFIG</li>
+    <li class="checklist-item" onclick="toggleCheck(this)"><div class="check-box"></div>FLIGHT RULES</li>
+    <li class="checklist-item" onclick="toggleCheck(this)"><div class="check-box"></div>SAS ENABLE</li>
+    <li class="checklist-item" onclick="toggleCheck(this)"><div class="check-box"></div>THROTTLE SET</li>
+  </ul>
+  <button class="prelaunch-go-btn" onclick="dismissPrelaunch()">GO FOR LAUNCH</button>
+  <div class="prelaunch-dismiss" onclick="dismissPrelaunch()">DISMISS</div>
+</div>
+
+<!-- Flight score overlay (UX P3-14) -->
+<div id="flight-score-overlay">
+  <div class="score-title">FLIGHT PERFORMANCE</div>
+  <div class="score-overall" id="score-overall">—</div>
+  <div class="score-grade" id="score-grade">—</div>
+  <div class="score-breakdown">
+    <div class="score-component">
+      <div class="score-component-label">ORBITAL ACCURACY</div>
+      <div class="score-component-value" id="score-orbital">—</div>
+    </div>
+    <div class="score-component">
+      <div class="score-component-label">FUEL EFFICIENCY</div>
+      <div class="score-component-value" id="score-fuel">—</div>
+    </div>
+  </div>
+  <div class="score-dismiss" onclick="el('flight-score-overlay').style.display='none'">DISMISS</div>
+</div>
+
 <div id="shell">
 
   <!-- TOP BAR -->
@@ -425,6 +588,15 @@ html,body{width:100%;height:100%;background:var(--mc-bg);color:var(--mc-text);
       </div>
       <div class="fuel-bar-wrap">
         <div class="fuel-bar-bg"><div class="fuel-bar-fill" id="sf-bar" style="width:0%;background:var(--mc-violet-bright)"></div></div>
+      </div>
+      <!-- Consumables trending (UX P3-11) -->
+      <div class="consumables-row" id="consumables-trending" style="display:none">
+        <span class="consumables-label">BURN RATE</span>
+        <span class="consumables-value" id="t-burn-rate">—</span>
+      </div>
+      <div class="consumables-row" id="consumables-ttd-row" style="display:none">
+        <span class="consumables-label">TIME TO DEPL</span>
+        <span class="consumables-value" id="t-ttd">—</span>
       </div>
     </div>
 
@@ -614,6 +786,15 @@ html,body{width:100%;height:100%;background:var(--mc-bg);color:var(--mc-text);
       </div>
     </div>
 
+    <!-- Event log (UX KSP-06/07) -->
+    <div id="event-log-section">
+      <div class="event-log-title">
+        <span>MISSION EVENT LOG</span>
+        <span class="event-log-export" onclick="exportEventLog()">EXPORT</span>
+      </div>
+      <div id="event-log"></div>
+    </div>
+
   </section>
 
   <!-- BOTTOM — TIMELINE -->
@@ -628,6 +809,34 @@ html,body{width:100%;height:100%;background:var(--mc-bg);color:var(--mc-text);
      ============================================================ -->
 <script>
 'use strict';
+
+// ---------------------------------------------------------------
+// URL PARAMS & INITIALIZATION (UX P2-8, P3-13)
+// ---------------------------------------------------------------
+const _urlParams = new URLSearchParams(window.location.search);
+const _overlayPanel = _urlParams.get('overlay');
+const _fontScale = parseFloat(_urlParams.get('fontscale') || '1');
+const _missionName = _urlParams.get('mission');
+const _showChecklist = _urlParams.get('checklist') !== '0';
+
+// OBS overlay mode (UX P2-8)
+if (_overlayPanel) {
+  document.body.classList.add('overlay-mode');
+  if (_fontScale !== 1) document.documentElement.style.fontSize = (_fontScale * 100) + '%';
+  document.addEventListener('DOMContentLoaded', () => {
+    const target = document.querySelector('[data-panel="' + _overlayPanel + '"]');
+    if (target) target.classList.add('overlay-visible');
+  });
+}
+
+// Custom branding (UX P3-13)
+if (_missionName) {
+  document.addEventListener('DOMContentLoaded', () => {
+    const nameEl = document.getElementById('mission-name');
+    if (nameEl) nameEl.textContent = _missionName + ' · MISSION CONTROL';
+    document.title = _missionName + ' · MISSION CONTROL';
+  });
+}
 
 // ---------------------------------------------------------------
 // CONSTANTS (mirrors sim/constants.py)
@@ -856,12 +1065,16 @@ socket.on('telemetry', data => {
   });
   if (latestState.simulated) simMode = true;
   updateTelemetryPanel();
+  checkAutoLaunch(latestState);
   renderAll();
 });
 
 socket.on('director', data => {
   latestDirector = data;
   updateDirectorPanel();
+  trackEvents(latestState, data);
+  if (data.consumables) updateConsumablesDisplay(data.consumables);
+  if (data.flight_score) showFlightScore(data.flight_score);
 });
 
 
@@ -1495,27 +1708,53 @@ function drawTimeline() {
 }
 
 // ---------------------------------------------------------------
-// ADVISORY AUDIO ALERT (P3-02)
+// ADVISORY AUDIO + VISUAL ALERT (P3-02 enhanced by UX P1-6)
 // ---------------------------------------------------------------
 let _prevAdvisoryLevel = 'NOMINAL';
 const _alertCtx = typeof AudioContext !== 'undefined' ? new AudioContext() : null;
-function playAdvisoryAlert(level) {
-  if (!_alertCtx || level === _prevAdvisoryLevel) { _prevAdvisoryLevel = level; return; }
-  const priority = { NOMINAL: 0, CAUTION: 1, WARNING: 2, ABORT: 3 };
-  if ((priority[level] || 0) <= (priority[_prevAdvisoryLevel] || 0)) { _prevAdvisoryLevel = level; return; }
-  _prevAdvisoryLevel = level;
-  const freq = level === 'ABORT' ? 880 : level === 'WARNING' ? 660 : 440;
-  const dur = level === 'ABORT' ? 0.4 : 0.2;
+let _abortAlarmInterval = null;
+
+function _playTone(freq, dur, type) {
+  if (!_alertCtx) return;
   try {
     const osc = _alertCtx.createOscillator();
     const gain = _alertCtx.createGain();
     osc.connect(gain); gain.connect(_alertCtx.destination);
     osc.frequency.value = freq;
-    osc.type = 'square';
+    osc.type = type || 'square';
     gain.gain.setValueAtTime(0.08, _alertCtx.currentTime);
     gain.gain.exponentialRampToValueAtTime(0.001, _alertCtx.currentTime + dur);
     osc.start(); osc.stop(_alertCtx.currentTime + dur);
   } catch(e) {}
+}
+
+function playAdvisoryAlert(level) {
+  if (level === _prevAdvisoryLevel) return;
+  const priority = { NOMINAL: 0, CAUTION: 1, WARNING: 2, ABORT: 3 };
+  if ((priority[level] || 0) <= (priority[_prevAdvisoryLevel] || 0)) { _prevAdvisoryLevel = level; return; }
+  _prevAdvisoryLevel = level;
+
+  if (_abortAlarmInterval) { clearInterval(_abortAlarmInterval); _abortAlarmInterval = null; }
+
+  if (level === 'CAUTION') {
+    _playTone(440, 0.2);
+  } else if (level === 'WARNING') {
+    _playTone(660, 0.15);
+    setTimeout(() => _playTone(660, 0.15), 200);
+  } else if (level === 'ABORT') {
+    _playTone(880, 0.3);
+    setTimeout(() => _playTone(880, 0.3), 350);
+    _abortAlarmInterval = setInterval(() => { _playTone(880, 0.3); setTimeout(() => _playTone(880, 0.3), 350); }, 2000);
+  }
+
+  // Visual flash on shell (UX P1-6)
+  const shell = document.getElementById('shell');
+  if (shell && (level === 'CAUTION' || level === 'WARNING' || level === 'ABORT')) {
+    shell.classList.remove('alert-flash-CAUTION', 'alert-flash-WARNING', 'alert-flash-ABORT');
+    void shell.offsetWidth;
+    shell.classList.add('alert-flash-' + level);
+    if (level !== 'ABORT') setTimeout(() => shell.classList.remove('alert-flash-' + level), 1000);
+  }
 }
 
 // ---------------------------------------------------------------
@@ -1718,6 +1957,157 @@ socket.on('playback_status', data => {
 });
 
 // ---------------------------------------------------------------
+// MISSION EVENT LOG (UX KSP-06/07)
+// ---------------------------------------------------------------
+const _eventLog = [];
+let _prevPhase = null;
+let _prevGateStatuses = {};
+
+function logEvent(met, type, msg) {
+  _eventLog.push({ met, type, msg, ts: Date.now() });
+  const logEl = el('event-log');
+  if (!logEl) return;
+  const entry = document.createElement('div');
+  entry.className = 'event-entry';
+  entry.innerHTML = '<span class="event-met">' + esc(formatMET(met)) + '</span>' +
+    '<span class="event-type ' + esc(type) + '">' + esc(type.toUpperCase()) + '</span>' +
+    '<span class="event-msg">' + esc(msg) + '</span>';
+  logEl.appendChild(entry);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function trackEvents(state, director) {
+  if (!director) return;
+  const met = state.mission_time || 0;
+
+  if (director.phase && director.phase !== _prevPhase) {
+    logEvent(met, 'phase', _prevPhase ? (_prevPhase + ' → ' + director.phase) : director.phase);
+    _prevPhase = director.phase;
+  }
+
+  if (director.gates) {
+    director.gates.forEach(g => {
+      const prev = _prevGateStatuses[g.phase];
+      if (prev !== g.status && g.status !== 'NOT-YET') {
+        logEvent(met, 'gate', g.phase + ' — ' + g.status + (g.detail ? ' (' + g.detail + ')' : ''));
+        _prevGateStatuses[g.phase] = g.status;
+      }
+    });
+  }
+
+  if (director.advisory) {
+    const level = director.advisory.level;
+    if (level !== 'NOMINAL' && level !== _prevAdvisoryLevel) {
+      logEvent(met, 'advisory', level + ': ' + director.advisory.action);
+    }
+  }
+}
+
+function exportEventLog() {
+  const lines = _eventLog.map(e =>
+    formatMET(e.met) + '  ' + e.type.toUpperCase().padEnd(10) + e.msg
+  );
+  const text = 'MISSION EVENT LOG\n' + '='.repeat(60) + '\n' + lines.join('\n');
+  const blob = new Blob([text], { type: 'text/plain' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'mission_event_log.txt';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+// ---------------------------------------------------------------
+// CONSUMABLES TRENDING DISPLAY (UX P3-11)
+// ---------------------------------------------------------------
+function updateConsumablesDisplay(consumables) {
+  if (!consumables) return;
+  const trendRow = el('consumables-trending');
+  const ttdRow = el('consumables-ttd-row');
+  if (!trendRow) return;
+
+  if (consumables.burn_rate > 0.01) {
+    trendRow.style.display = '';
+    el('t-burn-rate').textContent = consumables.burn_rate.toFixed(1) + ' u/s';
+    if (consumables.time_to_depletion != null) {
+      ttdRow.style.display = '';
+      el('t-ttd').textContent = consumables.time_to_depletion.toFixed(0) + 's';
+    } else {
+      ttdRow.style.display = 'none';
+    }
+  } else {
+    trendRow.style.display = 'none';
+    ttdRow.style.display = 'none';
+  }
+}
+
+// ---------------------------------------------------------------
+// FLIGHT SCORE DISPLAY (UX P3-14)
+// ---------------------------------------------------------------
+let _scoreShown = false;
+
+function showFlightScore(score) {
+  if (!score || _scoreShown) return;
+  _scoreShown = true;
+  const overlay = el('flight-score-overlay');
+  if (!overlay) return;
+  el('score-overall').textContent = score.overall;
+  const grade = score.overall >= 90 ? 'EXCELLENT' : score.overall >= 75 ? 'GOOD' :
+                score.overall >= 60 ? 'FAIR' : score.overall >= 40 ? 'MARGINAL' : 'POOR';
+  const gradeColor = score.overall >= 75 ? 'var(--mc-green-bright)' :
+                     score.overall >= 50 ? 'var(--mc-yellow-bright)' : 'var(--mc-red-bright)';
+  el('score-grade').textContent = grade;
+  el('score-grade').style.color = gradeColor;
+  el('score-orbital').textContent = score.orbital_accuracy;
+  el('score-fuel').textContent = score.fuel_efficiency;
+  overlay.style.display = '';
+}
+
+// ---------------------------------------------------------------
+// PRE-LAUNCH CHECKLIST (UX P2-10)
+// ---------------------------------------------------------------
+let _prelaunchDismissed = false;
+let _countdownValue = 10;
+let _countdownInterval = null;
+
+function toggleCheck(item) {
+  item.classList.toggle('checked');
+}
+
+function dismissPrelaunch() {
+  _prelaunchDismissed = true;
+  const overlay = el('prelaunch-overlay');
+  if (overlay) overlay.classList.add('hidden');
+  if (_countdownInterval) { clearInterval(_countdownInterval); _countdownInterval = null; }
+}
+
+function startPrelaunchCountdown() {
+  if (_prelaunchDismissed || _countdownInterval) return;
+  _countdownValue = 10;
+  _countdownInterval = setInterval(() => {
+    _countdownValue--;
+    const cdEl = el('prelaunch-countdown');
+    if (cdEl) cdEl.textContent = _countdownValue <= 0 ? 'LIFTOFF' : 'T-' + _countdownValue;
+    if (_countdownValue <= 0) {
+      clearInterval(_countdownInterval);
+      _countdownInterval = null;
+      setTimeout(dismissPrelaunch, 1000);
+    }
+  }, 1000);
+}
+
+// Auto-dismiss checklist when flight detected
+function checkAutoLaunch(state) {
+  if (_prelaunchDismissed) return;
+  if (state && state.mission_time > 3 && state.altitude > 100) {
+    dismissPrelaunch();
+  }
+}
+
+// Hide checklist in overlay mode
+if (_overlayPanel) _prelaunchDismissed = true;
+if (!_showChecklist) _prelaunchDismissed = true;
+
+// ---------------------------------------------------------------
 // HOUSTON UI INTEGRATION HOOKS
 // ---------------------------------------------------------------
 // Expose a global API so the Telemachus Houston UI (or any host
@@ -1727,8 +2117,8 @@ socket.on('playback_status', data => {
 //   - Change panels: window.MissionControl.showPanel('globe')
 //   - Reset trajectory: window.MissionControl.clearTrajectory()
 window.MissionControl = {
-  version: '1.0.0',
-  mission: 'PERSEUS-1',
+  version: '1.1.0',
+  mission: _missionName || 'PERSEUS-1',
 
   getState() { return { ...latestState }; },
   getDirector() { return { ...latestDirector }; },
@@ -1758,6 +2148,8 @@ window.MissionControl = {
   }).then(r => r.json()); },
   getPlaybackStatus() { return currentPlaybackStatus; },
   controlPlayback(action, speed) { socket.emit('playback_control', {action, speed}); },
+  getEventLog() { return [..._eventLog]; },
+  getFlightScore() { return latestDirector.flight_score || null; },
 };
 
 // Dispatch a standard custom event on each telemetry update

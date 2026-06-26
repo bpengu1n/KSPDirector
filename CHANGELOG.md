@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Added
+- **Booster SEP confirmation gate** (UX-FC01a): New go/no-go gate for SRB separation. GO when alt >1.5 km and vel >150 m/s at sep; MARGINAL for early sep; NOT-YET before burnout. Gate count now 5 (was 4).
+- **Nominal pitch reference in advisories** (UX-FC01b): Pitch correction advisories now include the nominal pitch value (e.g., "PITCH TOWARD HORIZON (+22° STEEP, NOM 45°)") so operators can see the delta and target.
+- **Consumables trending** (UX-P3-11): FlightDirector output includes `consumables.burn_rate` (units/s, EMA-smoothed) and `consumables.time_to_depletion` (seconds). Frontend displays burn rate and TTD below fuel bars when burning.
+- **Flight efficiency scoring** (UX-P3-14): Post-flight scorecard (0–100) displayed when ORBIT phase reached. Components: orbital accuracy (Ap/Pe error vs 80 km target) and fuel efficiency. Accessible via `window.MissionControl.getFlightScore()`.
+- **Enhanced audio/visual alerts** (UX-P1-6): Distinct tone patterns per level — single beep (CAUTION), double beep (WARNING), continuous alarm (ABORT). Visual screen-edge flash animation on advisory escalation. ABORT produces persistent red border pulse on shell.
+- **OBS overlay mode** (UX-P2-8): `?overlay=gates|advisory|telemetry|director` URL parameter renders individual panels with transparent backgrounds for stream overlays. `?fontscale=1.5` for presentation-mode font scaling. Compatible with OBS browser source.
+- **Pre-launch countdown and checklist** (UX-P2-10): Dismissible overlay with 5 default checklist items (TELEMETRY LINK, VEHICLE CONFIG, FLIGHT RULES, SAS ENABLE, THROTTLE SET). T-10 countdown timer with auto-dismiss when flight detected. Disable with `?checklist=0`.
+- **Mission event log** (UX-KSP06/07): Scrollable log tracking phase transitions, gate status changes, and advisory level changes with MET timestamps. Export as downloadable text file. Accessible via `window.MissionControl.getEventLog()`.
+- **Custom mission branding** (UX-P3-13): `?mission=NAME` URL parameter overrides "PERSEUS 1" in topbar and page title. Server-side `--mission-name` CLI argument. Reflected in `window.MissionControl.mission`.
+- **Server `/api/config` endpoint**: Serves server-side configuration (mission name).
+- **40 new tests** (`test_ux_review.py`): Backend logic tests for booster SEP gate (7), advisory pitch reference (3), consumables trending (4), flight scoring (3), alert escalation (3); source-level verification for overlay mode (4), checklist (5), branding (4), event log (6), server config (1).
+
+### Added (documentation)
+- **UX_REVIEW.md**: Comprehensive team assessment of all 15 UX survey recommendations. 9 items implemented, 7 deferred with rationale, 1 declined. Includes implementation priority order, stability risk assessment, and domain fidelity evaluation.
+
 ## [1.2.0] — 2026-06-26
 
 ### Changed

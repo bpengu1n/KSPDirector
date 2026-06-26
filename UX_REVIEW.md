@@ -462,9 +462,20 @@ Based on stability risk, value/effort, and dependency ordering:
 
 *Updated as features are merged.*
 
-| Item | Branch | Tests | Status |
-|------|--------|-------|--------|
-| — | — | — | Implementation starting |
+| Item | Tests | Status |
+|------|-------|--------|
+| FC-01a: Booster SEP Gate | 7 tests (TestBoosterSepGate) | DONE |
+| FC-01b: Advisory Pitch Reference | 3 tests (TestAdvisoryPitchReference) | DONE |
+| P3-11: Consumables Trending | 4 tests (TestConsumablesTrending) | DONE |
+| P3-14: Flight Efficiency Scoring | 3 tests (TestFlightEfficiencyScoring) | DONE |
+| P1-6: Audio/Visual Alert Escalation | 3 tests (TestAlertEscalation) | DONE |
+| P2-8: OBS Overlay Mode | 4 tests (TestOverlayMode) | DONE |
+| P2-10: Pre-Launch Checklist | 5 tests (TestPrelaunchChecklist) | DONE |
+| KSP-06/07: Mission Event Log | 6 tests (TestMissionEventLog) | DONE |
+| P3-13: Custom Mission Branding | 4 tests (TestCustomBranding) | DONE |
+| Server: /api/config endpoint | 1 test (TestServerConfig) | DONE |
+
+**Total new tests: 40** (310 passed, 54 skipped — up from 270/54)
 
 ---
 

@@ -259,6 +259,17 @@ def assess_gates(state: dict, phase: FlightPhase,
 
     gates = []
 
+    # Gate 0: Booster separation (FC-01 UX review)
+    sf = state.get("solid_fuel") or 0
+    vel = state.get("velocity") or 0
+    if phase == FlightPhase.PRELAUNCH or (phase == FlightPhase.BOOST and sf > 1):
+        gates.append(GateStatus("BOOSTER SEP", "NOT-YET", "Awaiting SRB burnout"))
+    else:
+        sep_ok = alt_km > 1.5 and vel > 150
+        sep_marginal = alt_km > 0.5 or vel > 50
+        gates.append(gate("BOOSTER SEP", sep_ok, sep_marginal and not sep_ok,
+                          not sep_marginal, alt_km, " km alt"))
+
     # Gate 1: Core burnout apoapsis
     if phase in (FlightPhase.PRELAUNCH, FlightPhase.BOOST):
         gates.append(GateStatus("CORE B/O", "NOT-YET", "Awaiting booster sep"))
@@ -410,17 +421,18 @@ def generate_advisory(state: dict, phase: FlightPhase,
                 # KSP pitch is from horizon; pitch_from_vertical = 90 - KSP_pitch
                 actual_pitch_v = 90.0 - pitch
                 diff = actual_pitch_v - nom_pitch_v
+                nom_ksp_pitch = 90.0 - nom_pitch_v
                 if diff > 12:
                     return Advisory(
                         level="CAUTION",
-                        action=f"PITCH TOWARD HORIZON  (+{diff:.0f}° STEEP)",
+                        action=f"PITCH TOWARD HORIZON  (+{diff:.0f}° STEEP, NOM {nom_ksp_pitch:.0f}°)",
                         reason=(f"Flying {diff:.0f}° steeper than nominal — "
                                 f"gaining altitude at cost of horizontal speed"),
                     )
                 elif diff < -12:
                     return Advisory(
                         level="CAUTION",
-                        action=f"PITCH TOWARD VERTICAL  ({-diff:.0f}° SHALLOW)",
+                        action=f"PITCH TOWARD VERTICAL  ({-diff:.0f}° SHALLOW, NOM {nom_ksp_pitch:.0f}°)",
                         reason=(f"Flying {-diff:.0f}° shallower than nominal — "
                                 f"may undershoot apoapsis target"),
                     )
@@ -474,6 +486,9 @@ class FlightDirector:
         self._phase = FlightPhase.PRELAUNCH
         self._fuel_at_core_sep: Optional[float] = None
         self._prev_apo_km: Optional[float] = None   # for P2-08 stall detection
+        self._prev_lf: Optional[float] = None
+        self._prev_met: Optional[float] = None
+        self._burn_rate: float = 0.0
 
     def update(self, state: dict) -> dict:
         """Process one telemetry snapshot and return the full director output."""
@@ -497,7 +512,46 @@ class FlightDirector:
         # Update prev_apo for next cycle
         self._prev_apo_km = (state.get("apoapsis") or 0) / 1000.0
 
-        return {
+        # Consumables trending (UX P3-11 / FC-01)
+        lf = state.get("liquid_fuel") or 0
+        current_met = state.get("mission_time") or 0
+        if self._prev_lf is not None and self._prev_met is not None:
+            dt = current_met - self._prev_met
+            if dt > 0:
+                raw_rate = (self._prev_lf - lf) / dt
+                alpha = 0.3
+                self._burn_rate = alpha * max(0.0, raw_rate) + (1 - alpha) * self._burn_rate
+        self._prev_lf = lf
+        self._prev_met = current_met
+
+        ttd = None
+        if self._burn_rate > 0.01 and lf > 0:
+            ttd = lf / self._burn_rate
+
+        consumables = {
+            "burn_rate": round(self._burn_rate, 3),
+            "time_to_depletion": round(ttd, 1) if ttd is not None else None,
+            "liquid_fuel_pct": round((lf / 360.0) * 100, 1),
+        }
+
+        # Flight efficiency scoring (UX P3-14)
+        flight_score = None
+        if phase == FlightPhase.ORBIT:
+            apo_km = (state.get("apoapsis") or 0) / 1000.0
+            pe_km = (state.get("periapsis") or 0) / 1000.0
+            target_alt = 80.0
+            apo_err = abs(apo_km - target_alt)
+            pe_err = abs(pe_km - target_alt)
+            orbital_accuracy = max(0, 100 - (apo_err + pe_err) * 2)
+            fuel_efficiency = min(100, (lf / 360.0) * 100 * 1.5)
+            overall = round(orbital_accuracy * 0.6 + fuel_efficiency * 0.4)
+            flight_score = {
+                "overall": max(0, min(100, overall)),
+                "orbital_accuracy": round(max(0, min(100, orbital_accuracy))),
+                "fuel_efficiency": round(max(0, min(100, fuel_efficiency))),
+            }
+
+        result = {
             "phase": phase.value,
             "advisory": {
                 "level":  advisory.level,
@@ -511,4 +565,8 @@ class FlightDirector:
             ],
             "nominal_at_time": nominal_at_t,
             "nominal_at_alt":  nominal_at_alt,
+            "consumables": consumables,
         }
+        if flight_score is not None:
+            result["flight_score"] = flight_score
+        return result
