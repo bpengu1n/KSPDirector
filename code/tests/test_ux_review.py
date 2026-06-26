@@ -380,7 +380,7 @@ class TestPrelaunchChecklist:
 # ---------------------------------------------------------------------------
 
 class TestCustomBranding:
-    """Verify custom branding support."""
+    """Verify custom branding support — persistent setting via localStorage."""
 
     @pytest.fixture
     def html_source(self):
@@ -392,14 +392,34 @@ class TestCustomBranding:
         with open(html_path) as f:
             return f.read()
 
-    def test_ux_p313_mission_url_param(self, html_source):
-        """URL param 'mission' is parsed for custom branding."""
-        assert "_missionName" in html_source
+    def test_ux_p313_localstorage_persistence(self, html_source):
+        """Mission name is stored in localStorage for persistence."""
+        assert "localStorage.getItem" in html_source
+        assert "localStorage.setItem" in html_source
+        assert "mc_mission_name" in html_source
 
     def test_ux_p313_mission_name_applied(self, html_source):
         """Mission name is applied to topbar element."""
         assert "mission-name" in html_source
         assert "MISSION CONTROL" in html_source
+
+    def test_ux_p313_settings_input_exists(self, html_source):
+        """Scenario panel has a mission name input field."""
+        assert "sc-mission-name" in html_source
+        assert "setMissionName" in html_source
+
+    def test_ux_p313_apply_mission_name_function(self, html_source):
+        """applyMissionName function updates UI elements."""
+        assert "function applyMissionName" in html_source
+        assert "function setMissionName" in html_source
+
+    def test_ux_p313_url_param_override(self, html_source):
+        """URL param still works as a one-time override that saves to localStorage."""
+        assert "_missionUrlParam" in html_source
+
+    def test_ux_p313_server_config_fallback(self, html_source):
+        """Falls back to server /api/config for mission name."""
+        assert "/api/config" in html_source
 
     def test_ux_p313_server_mission_name_arg(self):
         """Server accepts --mission-name CLI argument."""

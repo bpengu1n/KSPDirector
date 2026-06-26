@@ -266,14 +266,16 @@ separate integration project, not a UX fix.
 
 | Criterion | Assessment |
 |-----------|------------|
-| Viability | Simple — read mission name from URL param or server config, apply to title + topbar + MissionControl API. |
+| Viability | Simple — persistent localStorage setting with fallback chain, apply to title + topbar + MissionControl API. |
 | Stability risk | **VERY LOW** — String substitution only. |
 | Value/effort | Medium — specifically requested by content creator (KSP-07). |
 
 **Implementation plan:**
-- `?mission=NAME` URL parameter overrides "PERSEUS 1" in topbar
-- `window.MissionControl.mission` reflects the custom name
-- Server-side `--mission-name` CLI arg sets default for all clients
+- Persistent mission name stored in `localStorage` (key: `mc_mission_name`)
+- Editable via "Mission Settings" section in the Scenario panel
+- Priority chain: URL param `?mission=NAME` (one-time override, auto-saves to localStorage) → localStorage → server `/api/config` → default "PERSEUS 1"
+- `window.MissionControl.mission` reflects the active name
+- Server-side `--mission-name` CLI arg sets default for all clients via `/api/config`
 
 **Branch:** `feature/ux-custom-branding`
 
@@ -472,10 +474,10 @@ Based on stability risk, value/effort, and dependency ordering:
 | P2-8: OBS Overlay Mode | 4 tests (TestOverlayMode) | DONE |
 | P2-10: Pre-Launch Checklist | 5 tests (TestPrelaunchChecklist) | DONE |
 | KSP-06/07: Mission Event Log | 6 tests (TestMissionEventLog) | DONE |
-| P3-13: Custom Mission Branding | 4 tests (TestCustomBranding) | DONE |
+| P3-13: Custom Mission Branding | 8 tests (TestCustomBranding) | DONE |
 | Server: /api/config endpoint | 1 test (TestServerConfig) | DONE |
 
-**Total new tests: 40** (310 passed, 54 skipped — up from 270/54)
+**Total new tests: 44** (314 passed, 54 passed w/ browser — up from 270/54)
 
 ---
 

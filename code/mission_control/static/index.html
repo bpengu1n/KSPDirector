@@ -722,6 +722,16 @@ body.overlay-mode #nominal-section{background:rgba(0,0,0,0.5);border-radius:4px;
         <div class="sc-summary" id="sc-summary"></div>
       </div>
 
+      <div class="sc-section">
+        <div class="sc-section-title">Mission Settings</div>
+        <div class="sc-row">
+          <span class="sc-label">NAME</span>
+          <input id="sc-mission-name" class="sc-input" type="text" placeholder="PERSEUS 1"
+                 style="width:140px;text-transform:uppercase"
+                 onchange="setMissionName(this.value)"/>
+        </div>
+      </div>
+
     </div>
 
   </section>
@@ -816,8 +826,34 @@ body.overlay-mode #nominal-section{background:rgba(0,0,0,0.5);border-radius:4px;
 const _urlParams = new URLSearchParams(window.location.search);
 const _overlayPanel = _urlParams.get('overlay');
 const _fontScale = parseFloat(_urlParams.get('fontscale') || '1');
-const _missionName = _urlParams.get('mission');
+const _missionUrlParam = _urlParams.get('mission');
 const _showChecklist = _urlParams.get('checklist') !== '0';
+
+// Custom branding (UX P3-13) — persistent via localStorage
+// Priority: URL param (one-time override, also saves) > localStorage > server config > default
+let _missionName = _missionUrlParam || localStorage.getItem('mc_mission_name') || null;
+if (_missionUrlParam) localStorage.setItem('mc_mission_name', _missionUrlParam);
+
+function applyMissionName(name) {
+  _missionName = name || null;
+  const nameEl = document.getElementById('mission-name');
+  const display = name || 'PERSEUS 1';
+  if (nameEl) nameEl.textContent = display + ' · MISSION CONTROL';
+  document.title = display + ' · MISSION CONTROL';
+  if (window.MissionControl) window.MissionControl.mission = name || 'PERSEUS-1';
+  const input = document.getElementById('sc-mission-name');
+  if (input && input.value !== (name || '')) input.value = name || '';
+}
+
+function setMissionName(name) {
+  const trimmed = (name || '').trim();
+  if (trimmed) {
+    localStorage.setItem('mc_mission_name', trimmed);
+  } else {
+    localStorage.removeItem('mc_mission_name');
+  }
+  applyMissionName(trimmed || null);
+}
 
 // OBS overlay mode (UX P2-8)
 if (_overlayPanel) {
@@ -829,14 +865,21 @@ if (_overlayPanel) {
   });
 }
 
-// Custom branding (UX P3-13)
-if (_missionName) {
-  document.addEventListener('DOMContentLoaded', () => {
-    const nameEl = document.getElementById('mission-name');
-    if (nameEl) nameEl.textContent = _missionName + ' · MISSION CONTROL';
-    document.title = _missionName + ' · MISSION CONTROL';
-  });
-}
+// Apply branding on DOM ready; also fetch server config for server-side default
+document.addEventListener('DOMContentLoaded', () => {
+  if (_missionName) {
+    applyMissionName(_missionName);
+  }
+  if (!_missionName) {
+    fetch('/api/config').then(r => r.json()).then(cfg => {
+      if (cfg.mission_name && !_missionName) {
+        applyMissionName(cfg.mission_name);
+      }
+    }).catch(() => {});
+  }
+  const nameInput = document.getElementById('sc-mission-name');
+  if (nameInput) nameInput.value = _missionName || '';
+});
 
 // ---------------------------------------------------------------
 // CONSTANTS (mirrors sim/constants.py)
