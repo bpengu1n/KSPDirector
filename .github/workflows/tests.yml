@@ -22,13 +22,10 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: pip install -r code/requirements.txt
-
-      - name: Run regression suite
-        working-directory: code
         run: |
-          python -m unittest tests.test_p0_regressions \
-                             tests.test_p1_regressions \
-                             tests.test_p2_p3_regressions \
-                             tests.test_scenario \
-                             tests.test_ballistic_projection -v
+          pip install -r code/requirements.txt
+          pip install pytest pytest-randomly pytest-reverse
+
+      - name: Run test suite
+        working-directory: code
+        run: python -m pytest tests/ -v --ignore=tests/test_ui_playwright.py --ignore=tests/test_isolation.py
