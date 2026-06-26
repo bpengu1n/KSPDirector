@@ -282,3 +282,105 @@ def test_css_vars(page, prop):
     val = page.evaluate(
         f"getComputedStyle(document.documentElement).getPropertyValue('{prop}').trim()")
     assert len(val) > 0, f"CSS custom property {prop} must be defined"
+
+
+# --- UX Review: Mission branding persistence ---
+
+def test_mission_name_input_exists(page):
+    el = page.query_selector("#sc-mission-name")
+    assert el is not None, "Mission name input must exist in scenario panel"
+    assert el.get_attribute("type") == "text"
+
+
+def test_mission_name_default_display(page):
+    name_el = page.query_selector("#mission-name")
+    assert name_el is not None
+    assert "PERSEUS 1" in name_el.text_content()
+    assert "MISSION CONTROL" in name_el.text_content()
+
+
+def test_set_mission_name_updates_ui(page):
+    page.evaluate("setMissionName('GEMINI 4')")
+    name_el = page.query_selector("#mission-name")
+    assert "GEMINI 4" in name_el.text_content()
+    title = page.evaluate("document.title")
+    assert "GEMINI 4" in title
+    page.evaluate("setMissionName('')")
+
+
+def test_mission_name_localstorage_persistence(page):
+    page.evaluate("setMissionName('APOLLO 13')")
+    stored = page.evaluate("localStorage.getItem('mc_mission_name')")
+    assert stored == "APOLLO 13"
+    page.evaluate("setMissionName('')")
+    stored_after = page.evaluate("localStorage.getItem('mc_mission_name')")
+    assert stored_after is None
+
+
+def test_mission_name_syncs_houston_api(page):
+    page.evaluate("setMissionName('VOSTOK 1')")
+    mission = page.evaluate("window.MissionControl.mission")
+    assert mission == "VOSTOK 1"
+    page.evaluate("setMissionName('')")
+    default = page.evaluate("window.MissionControl.mission")
+    assert default == "PERSEUS-1"
+
+
+def test_apply_mission_name_updates_input(page):
+    page.evaluate("applyMissionName('MERCURY 7')")
+    val = page.evaluate("document.getElementById('sc-mission-name').value")
+    assert val == "MERCURY 7"
+    page.evaluate("setMissionName('')")
+
+
+# --- UX Review: Pre-launch checklist ---
+
+def test_prelaunch_overlay_exists(page):
+    el = page.query_selector("#prelaunch-overlay")
+    assert el is not None, "Pre-launch checklist overlay must exist"
+
+
+def test_prelaunch_checklist_items(page):
+    items = page.evaluate("""
+        Array.from(document.querySelectorAll('.checklist-item'))
+             .map(el => el.textContent)
+    """)
+    assert len(items) >= 5
+
+
+# --- UX Review: Event log ---
+
+def test_event_log_section_exists(page):
+    el = page.query_selector("#event-log")
+    assert el is not None, "Event log container must exist"
+
+
+def test_event_log_export_button(page):
+    has_fn = page.evaluate("typeof exportEventLog === 'function'")
+    assert has_fn is True
+
+
+# --- UX Review: Alert flash animations ---
+
+def test_alert_flash_functions(page):
+    has_play = page.evaluate("typeof _playTone === 'function'")
+    assert has_play is True
+
+
+# --- UX Review: Consumables display ---
+
+def test_consumables_display_elements(page):
+    has_fn = page.evaluate("typeof updateConsumablesDisplay === 'function'")
+    assert has_fn is True
+
+
+# --- UX Review: Flight score ---
+
+def test_flight_score_overlay_exists(page):
+    el = page.query_selector("#flight-score-overlay")
+    assert el is not None, "Flight score overlay must exist"
+
+
+def test_flight_score_function(page):
+    has_fn = page.evaluate("typeof showFlightScore === 'function'")
+    assert has_fn is True
