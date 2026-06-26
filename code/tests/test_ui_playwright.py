@@ -384,3 +384,58 @@ def test_flight_score_overlay_exists(page):
 def test_flight_score_function(page):
     has_fn = page.evaluate("typeof showFlightScore === 'function'")
     assert has_fn is True
+
+
+# --- UX Review: Behavioral tests (not just existence) ---
+
+def test_event_log_records_phase_change(page):
+    """trackEvents logs phase transitions to the event log."""
+    page.evaluate("""
+        _eventLog.length = 0;
+        document.getElementById('event-log').innerHTML = '';
+        _prevPhase = null;
+        trackEvents({mission_time: 25}, {phase: 'BOOST', gates: [], advisory: {level: 'NOMINAL'}});
+        trackEvents({mission_time: 61}, {phase: 'CORE', gates: [], advisory: {level: 'NOMINAL'}});
+    """)
+    entries = page.evaluate("_eventLog.length")
+    assert entries >= 2
+    last = page.evaluate("_eventLog[_eventLog.length - 1].msg")
+    assert "CORE" in last
+
+
+def test_event_log_records_advisory_change(page):
+    """trackEvents logs advisory level changes independently of playAdvisoryAlert."""
+    page.evaluate("""
+        _eventLog.length = 0;
+        document.getElementById('event-log').innerHTML = '';
+        _prevLoggedAdvisoryLevel = 'NOMINAL';
+        _prevPhase = 'CORE';
+        trackEvents({mission_time: 80}, {phase: 'CORE', gates: [],
+            advisory: {level: 'CAUTION', action: 'PITCH STEEP'}});
+    """)
+    entries = page.evaluate("_eventLog.filter(e => e.type === 'advisory').length")
+    assert entries == 1
+
+
+def test_abort_alarm_clears_on_deescalation(page):
+    """playAdvisoryAlert clears abort alarm interval on de-escalation."""
+    result = page.evaluate("""
+        _prevAdvisoryLevel = 'NOMINAL';
+        playAdvisoryAlert('ABORT');
+        const hadAlarm = _abortAlarmInterval !== null;
+        playAdvisoryAlert('CAUTION');
+        const alarmAfter = _abortAlarmInterval;
+        ({hadAlarm, alarmCleared: alarmAfter === null})
+    """)
+    assert result["hadAlarm"] is True
+    assert result["alarmCleared"] is True
+
+
+def test_overlay_panel_selector_sanitized(page):
+    """Overlay panel selector strips special characters."""
+    result = page.evaluate("""
+        const raw = '"],.bad[x="';
+        const safe = raw.replace(/[^a-zA-Z0-9_-]/g, '');
+        safe
+    """)
+    assert result == "badx"

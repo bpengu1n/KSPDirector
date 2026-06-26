@@ -81,6 +81,7 @@ class MissionSession:
         self.nominal_traj: Optional[NominalTrajectory] = None
         self.current_scenario: Optional[LaunchScenario] = None
         self.emit_rate_hz: int = 5
+        self._mission_name: Optional[str] = None
 
 session = MissionSession()
 

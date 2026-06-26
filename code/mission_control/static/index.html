@@ -860,7 +860,8 @@ if (_overlayPanel) {
   document.body.classList.add('overlay-mode');
   if (_fontScale !== 1) document.documentElement.style.fontSize = (_fontScale * 100) + '%';
   document.addEventListener('DOMContentLoaded', () => {
-    const target = document.querySelector('[data-panel="' + _overlayPanel + '"]');
+    const safePanel = _overlayPanel.replace(/[^a-zA-Z0-9_-]/g, '');
+    const target = document.querySelector('[data-panel="' + safePanel + '"]');
     if (target) target.classList.add('overlay-visible');
   });
 }
@@ -1773,11 +1774,10 @@ function _playTone(freq, dur, type) {
 
 function playAdvisoryAlert(level) {
   if (level === _prevAdvisoryLevel) return;
+  if (_abortAlarmInterval) { clearInterval(_abortAlarmInterval); _abortAlarmInterval = null; }
   const priority = { NOMINAL: 0, CAUTION: 1, WARNING: 2, ABORT: 3 };
   if ((priority[level] || 0) <= (priority[_prevAdvisoryLevel] || 0)) { _prevAdvisoryLevel = level; return; }
   _prevAdvisoryLevel = level;
-
-  if (_abortAlarmInterval) { clearInterval(_abortAlarmInterval); _abortAlarmInterval = null; }
 
   if (level === 'CAUTION') {
     _playTone(440, 0.2);
@@ -2005,6 +2005,7 @@ socket.on('playback_status', data => {
 const _eventLog = [];
 let _prevPhase = null;
 let _prevGateStatuses = {};
+let _prevLoggedAdvisoryLevel = 'NOMINAL';
 
 function logEvent(met, type, msg) {
   _eventLog.push({ met, type, msg, ts: Date.now() });
@@ -2040,8 +2041,9 @@ function trackEvents(state, director) {
 
   if (director.advisory) {
     const level = director.advisory.level;
-    if (level !== 'NOMINAL' && level !== _prevAdvisoryLevel) {
+    if (level !== 'NOMINAL' && level !== _prevLoggedAdvisoryLevel) {
       logEvent(met, 'advisory', level + ': ' + director.advisory.action);
+      _prevLoggedAdvisoryLevel = level;
     }
   }
 }

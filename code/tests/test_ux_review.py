@@ -4,6 +4,7 @@ Test naming follows the project convention: test_uxNN_description where NN
 traces to the UX_REVIEW.md item.
 """
 
+import os
 import re
 
 import pytest
@@ -12,6 +13,16 @@ from mission_control.nominal_compare import (
     FlightPhase, assess_gates, generate_advisory, FlightDirector,
     NominalTrajectory,
 )
+
+
+@pytest.fixture
+def html_source():
+    html_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "mission_control", "static", "index.html"
+    )
+    with open(html_path) as f:
+        return f.read()
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +67,27 @@ class TestBoosterSepGate:
         sep_gate = [g for g in gates if g.phase == "BOOSTER SEP"][0]
         assert sep_gate.status == "GO"
 
+    def test_ux_fc01a_nogo_very_low_sep(self, telemetry_state):
+        """BOOSTER SEP gate is NO-GO if sep at dangerously low alt and vel."""
+        state = telemetry_state(sf=0, alt=200, met=8, apo=500, vel=30)
+        gates = assess_gates(state, FlightPhase.CORE)
+        sep_gate = [g for g in gates if g.phase == "BOOSTER SEP"][0]
+        assert sep_gate.status == "NO-GO"
+
+    def test_ux_fc01a_marginal_boundary(self, telemetry_state):
+        """BOOSTER SEP at exact MARGINAL boundary (alt=0.5km, vel=50m/s)."""
+        state = telemetry_state(sf=0, alt=500, met=10, apo=1000, vel=50)
+        gates = assess_gates(state, FlightPhase.CORE)
+        sep_gate = [g for g in gates if g.phase == "BOOSTER SEP"][0]
+        assert sep_gate.status == "NO-GO"
+
+    def test_ux_fc01a_marginal_just_above_boundary(self, telemetry_state):
+        """BOOSTER SEP just above MARGINAL threshold."""
+        state = telemetry_state(sf=0, alt=600, met=10, apo=1200, vel=60)
+        gates = assess_gates(state, FlightPhase.CORE)
+        sep_gate = [g for g in gates if g.phase == "BOOSTER SEP"][0]
+        assert sep_gate.status == "MARGINAL"
+
     def test_ux_fc01a_five_gates_total(self, telemetry_state):
         """Gate count is now 5 (BOOSTER SEP + original 4)."""
         state = telemetry_state(sf=0, alt=3000, met=26, apo=5000)
@@ -87,8 +119,8 @@ class TestAdvisoryPitchReference:
             "apoapsis_km": 35.0,
         }
         adv = generate_advisory(state, FlightPhase.TERRIER, nominal=nominal)
-        assert "NOM" in adv.action or "nom" in adv.action.lower(), \
-            f"Advisory should reference nominal pitch, got: {adv.action}"
+        assert re.search(r"NOM\s+\d+°", adv.action), \
+            f"Advisory should include 'NOM <degrees>°', got: {adv.action}"
 
     def test_ux_fc01b_shallow_advisory_shows_nominal(self, telemetry_state):
         """When flying shallow, advisory includes nominal pitch reference."""
@@ -100,8 +132,8 @@ class TestAdvisoryPitchReference:
             "apoapsis_km": 35.0,
         }
         adv = generate_advisory(state, FlightPhase.TERRIER, nominal=nominal)
-        assert "NOM" in adv.action or "nom" in adv.action.lower(), \
-            f"Advisory should reference nominal pitch, got: {adv.action}"
+        assert re.search(r"NOM\s+\d+°", adv.action), \
+            f"Advisory should include 'NOM <degrees>°', got: {adv.action}"
 
     def test_ux_fc01b_nominal_flight_no_pitch_ref(self, telemetry_state):
         """When flying on-nominal, no pitch correction reference needed."""
@@ -192,6 +224,26 @@ class TestConsumablesTrending:
         assert result["consumables"]["burn_rate"] == pytest.approx(0, abs=0.01)
         assert result["consumables"]["time_to_depletion"] is None
 
+    def test_ux_p311_ema_convergence_under_sustained_burn(self):
+        """EMA burn rate converges toward actual rate after several updates."""
+        nominal = NominalTrajectory.load()
+        fd = FlightDirector(nominal)
+        lf = 360
+        met = 63
+        for i in range(10):
+            state = {
+                "altitude": 15000 + i * 500, "apoapsis": 25000 + i * 2000,
+                "periapsis": -587000, "mission_time": met,
+                "solid_fuel": 0, "liquid_fuel": lf,
+                "throttle": 1.0, "pitch": 50, "velocity": 631 + i * 10,
+                "v_horiz": 481 + i * 10, "v_vert": 408,
+            }
+            result = fd.update(state)
+            lf -= 5
+            met += 1
+        burn_rate = result["consumables"]["burn_rate"]
+        assert burn_rate == pytest.approx(5.0, rel=0.15)
+
     def test_ux_p311_no_consumables_on_first_update(self):
         """First update has no previous state — consumables should use defaults."""
         nominal = NominalTrajectory.load()
@@ -255,19 +307,53 @@ class TestFlightEfficiencyScoring:
         assert "fuel_efficiency" in score
         assert "orbital_accuracy" in score
 
-    def test_ux_p314_no_score_before_orbit(self):
-        """No flight score during ascent phases."""
+    @pytest.mark.parametrize("alt,apo,pe,met,sf,lf,pitch,vel,phase_desc", [
+        (500, 1000, 0, 5, 100, 360, 88, 50, "BOOST"),
+        (15000, 25000, -587000, 63, 0, 360, 50, 631, "CORE"),
+        (40000, 70000, -100000, 150, 0, 200, 15, 1500, "TERRIER"),
+        (75000, 80000, 60000, 400, 0, 160, 2, 2200, "CIRCULARIZE"),
+    ])
+    def test_ux_p314_no_score_before_orbit(self, alt, apo, pe, met, sf, lf,
+                                            pitch, vel, phase_desc):
+        """No flight score during ascent phases ({phase_desc})."""
         nominal = NominalTrajectory.load()
         fd = FlightDirector(nominal)
 
         state = {
-            "altitude": 15000, "apoapsis": 25000, "periapsis": -587000,
-            "mission_time": 63, "solid_fuel": 0, "liquid_fuel": 360,
-            "throttle": 1.0, "pitch": 50, "velocity": 631,
-            "v_horiz": 481, "v_vert": 408,
+            "altitude": alt, "apoapsis": apo, "periapsis": pe,
+            "mission_time": met, "solid_fuel": sf, "liquid_fuel": lf,
+            "throttle": 1.0, "pitch": pitch, "velocity": vel,
+            "v_horiz": vel, "v_vert": 0,
         }
         result = fd.update(state)
-        assert result.get("flight_score") is None
+        assert result.get("flight_score") is None, \
+            f"Should not score during {phase_desc}"
+
+    def test_ux_p314_score_edge_zero_fuel(self):
+        """Flight score with zero fuel remaining gives fuel_efficiency=0."""
+        nominal = NominalTrajectory.load()
+        fd = FlightDirector(nominal)
+        state = {
+            "altitude": 80000, "apoapsis": 80000, "periapsis": 78000,
+            "mission_time": 300, "solid_fuel": 0, "liquid_fuel": 0,
+            "throttle": 0.0, "pitch": 0, "velocity": 2250,
+            "v_horiz": 2250, "v_vert": 5,
+        }
+        result = fd.update(state)
+        assert result["flight_score"]["fuel_efficiency"] == 0
+
+    def test_ux_p314_score_edge_far_orbit(self):
+        """Flight score with orbit far from 80 km target gives low orbital_accuracy."""
+        nominal = NominalTrajectory.load()
+        fd = FlightDirector(nominal)
+        state = {
+            "altitude": 80000, "apoapsis": 200000, "periapsis": 78000,
+            "mission_time": 300, "solid_fuel": 0, "liquid_fuel": 150,
+            "throttle": 0.0, "pitch": 0, "velocity": 2250,
+            "v_horiz": 2250, "v_vert": 5,
+        }
+        result = fd.update(state)
+        assert result["flight_score"]["orbital_accuracy"] < 50
 
 
 # ---------------------------------------------------------------------------
@@ -307,15 +393,6 @@ class TestAlertEscalation:
 class TestOverlayMode:
     """Verify overlay mode CSS and URL param support are present in index.html."""
 
-    @pytest.fixture
-    def html_source(self):
-        import os
-        html_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "mission_control", "static", "index.html"
-        )
-        with open(html_path) as f:
-            return f.read()
 
     def test_ux_p28_overlay_css_exists(self, html_source):
         """Overlay mode CSS class is defined."""
@@ -342,15 +419,6 @@ class TestOverlayMode:
 class TestPrelaunchChecklist:
     """Verify pre-launch checklist elements exist in index.html."""
 
-    @pytest.fixture
-    def html_source(self):
-        import os
-        html_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "mission_control", "static", "index.html"
-        )
-        with open(html_path) as f:
-            return f.read()
 
     def test_ux_p210_checklist_overlay_exists(self, html_source):
         """Pre-launch overlay div exists."""
@@ -382,15 +450,6 @@ class TestPrelaunchChecklist:
 class TestCustomBranding:
     """Verify custom branding support — persistent setting via localStorage."""
 
-    @pytest.fixture
-    def html_source(self):
-        import os
-        html_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "mission_control", "static", "index.html"
-        )
-        with open(html_path) as f:
-            return f.read()
 
     def test_ux_p313_localstorage_persistence(self, html_source):
         """Mission name is stored in localStorage for persistence."""
@@ -441,15 +500,6 @@ class TestCustomBranding:
 class TestMissionEventLog:
     """Verify mission event log elements exist."""
 
-    @pytest.fixture
-    def html_source(self):
-        import os
-        html_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "mission_control", "static", "index.html"
-        )
-        with open(html_path) as f:
-            return f.read()
 
     def test_ux_ksp06_event_log_section(self, html_source):
         """Event log section exists in HTML."""

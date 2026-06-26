@@ -266,7 +266,7 @@ def assess_gates(state: dict, phase: FlightPhase,
         gates.append(GateStatus("BOOSTER SEP", "NOT-YET", "Awaiting SRB burnout"))
     else:
         sep_ok = alt_km > 1.5 and vel > 150
-        sep_marginal = alt_km > 0.5 or vel > 50
+        sep_marginal = alt_km > 0.5 and vel > 50
         gates.append(gate("BOOSTER SEP", sep_ok, sep_marginal and not sep_ok,
                           not sep_marginal, alt_km, " km alt"))
 
@@ -543,7 +543,7 @@ class FlightDirector:
             apo_err = abs(apo_km - target_alt)
             pe_err = abs(pe_km - target_alt)
             orbital_accuracy = max(0, 100 - (apo_err + pe_err) * 2)
-            fuel_efficiency = min(100, (lf / 360.0) * 100 * 1.5)
+            fuel_efficiency = min(100, (lf / 360.0) * 100)
             overall = round(orbital_accuracy * 0.6 + fuel_efficiency * 0.4)
             flight_score = {
                 "overall": max(0, min(100, overall)),
