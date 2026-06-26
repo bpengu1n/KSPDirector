@@ -2,11 +2,18 @@
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-06-26
+
 ### Changed
 - **Migrated from eventlet to threading** for Socket.IO async mode. Removes the deprecated `eventlet` dependency; `broadcast_loop` now uses `time.sleep()` instead of `eventlet.sleep()`. No behavioral change — telemetry clients already used stdlib threads.
+- **Test suite migrated from unittest to pytest**: All 6 test files converted from `unittest.TestCase` classes to plain pytest functions with shared fixtures in `conftest.py`. Uses `pytest.approx()`, `pytest.mark.parametrize`, and `pytest.mark.skipif`. Total: 324 collected (270 pass, 54 playwright skip without browser).
+- Test redundancy reduced: consolidated duplicate state-builder helpers into `conftest.py` factory fixtures (`terrier_ignition_state`, `telemetry_state`), removed duplicate API error tests between test files, unified 7 HTML `setUpClass` patterns into single `html_source` fixture.
+- `CLAUDE.md` updated with pytest commands, fixture documentation, and current test counts.
 
 ### Added
-- 6 Socket.IO broadcast integration tests (`TestSocketIOBroadcast`): connect events, telemetry/director broadcast, request_nominal, clear_trajectory — using `SocketIOTestClient`.
+- `tests/conftest.py`: Shared pytest fixtures (`project_root`, `vehicle_config`, `terrier_ignition_state`, `telemetry_state`).
+- `tests/COVERAGE_REPORT.md`: Coverage analysis (77% overall) with 10 prioritized recommendations for test augmentation (P-COV-01).
+- `.coverage` added to `.gitignore`.
 
 ## [1.1.1] — 2026-06-25
 

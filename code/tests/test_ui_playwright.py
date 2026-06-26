@@ -15,14 +15,10 @@ load the page in headless Chromium, and verify the actual rendered DOM.
 
 import os
 import socket
-import sys
 import threading
 import time
-import unittest
 
-ROOT = os.path.join(os.path.dirname(__file__), "..")
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
+import pytest
 
 CHROMIUM_PATH = "/opt/pw-browsers/chromium-1194/chrome-linux/chrome"
 
@@ -31,6 +27,11 @@ try:
     HAS_PLAYWRIGHT = True
 except ImportError:
     HAS_PLAYWRIGHT = False
+
+pytestmark = pytest.mark.skipif(
+    not HAS_PLAYWRIGHT or not os.path.exists(CHROMIUM_PATH),
+    reason="playwright not installed or Chromium not found",
+)
 
 
 def _free_port():
@@ -45,214 +46,239 @@ def _start_server(port):
                  allow_unsafe_werkzeug=True, log_output=False)
 
 
-@unittest.skipUnless(HAS_PLAYWRIGHT, "playwright not installed")
-@unittest.skipUnless(os.path.exists(CHROMIUM_PATH), "Chromium not found")
-class TestUIPlaywright(unittest.TestCase):
-    """P-TEST-06: DOM-based tests replacing regex HTML inspection."""
+@pytest.fixture(scope="module")
+def page():
+    """Start server in thread, launch browser, yield page, cleanup."""
+    port = _free_port()
+    server_thread = threading.Thread(
+        target=_start_server, args=(port,), daemon=True)
+    server_thread.start()
 
-    @classmethod
-    def setUpClass(cls):
-        cls._port = _free_port()
-        cls._server_thread = threading.Thread(
-            target=_start_server, args=(cls._port,), daemon=True)
-        cls._server_thread.start()
+    for _ in range(40):
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                break
+        except OSError:
+            time.sleep(0.25)
 
-        for _ in range(40):
-            try:
-                with socket.create_connection(("127.0.0.1", cls._port), timeout=0.5):
-                    break
-            except OSError:
-                time.sleep(0.25)
+    pw = sync_playwright().start()
+    browser = pw.chromium.launch(
+        executable_path=CHROMIUM_PATH, headless=True)
+    p = browser.new_page()
+    p.goto(f"http://127.0.0.1:{port}/", wait_until="networkidle")
 
-        cls._pw = sync_playwright().start()
-        cls._browser = cls._pw.chromium.launch(
-            executable_path=CHROMIUM_PATH, headless=True)
-        cls._page = cls._browser.new_page()
-        cls._page.goto(f"http://127.0.0.1:{cls._port}/", wait_until="networkidle")
+    yield p
 
-    @classmethod
-    def tearDownClass(cls):
-        cls._page.close()
-        cls._browser.close()
-        cls._pw.stop()
-
-    # --- Grid layout ---
-
-    def test_shell_exists_with_grid_display(self):
-        shell = self._page.query_selector("#shell")
-        self.assertIsNotNone(shell, "#shell element must exist")
-        display = self._page.evaluate(
-            "getComputedStyle(document.getElementById('shell')).display")
-        self.assertEqual(display, "grid")
-
-    def test_shell_has_three_grid_rows(self):
-        rows = self._page.evaluate(
-            "getComputedStyle(document.getElementById('shell')).gridTemplateRows")
-        parts = rows.strip().split()
-        self.assertEqual(len(parts), 3,
-                         f"#shell should have 3 grid rows, got {len(parts)}: {rows}")
-
-    def test_all_grid_panels_exist(self):
-        for panel_id in ["topbar", "left-panel", "center-panel",
-                         "right-panel", "timeline-bar"]:
-            el = self._page.query_selector(f"#{panel_id}")
-            self.assertIsNotNone(el, f"#{panel_id} must exist")
-
-    def test_center_panel_has_min_height_zero(self):
-        mh = self._page.evaluate(
-            "getComputedStyle(document.getElementById('center-panel')).minHeight")
-        self.assertEqual(mh, "0px",
-                         f"#center-panel min-height should be 0px, got {mh}")
-
-    def test_right_panel_has_min_height_zero(self):
-        mh = self._page.evaluate(
-            "getComputedStyle(document.getElementById('right-panel')).minHeight")
-        self.assertEqual(mh, "0px",
-                         f"#right-panel min-height should be 0px, got {mh}")
-
-    def test_body_overflow_hidden(self):
-        overflow = self._page.evaluate(
-            "getComputedStyle(document.body).overflow")
-        self.assertEqual(overflow, "hidden")
-
-    def test_timeline_bar_grid_row_placement(self):
-        row = self._page.evaluate(
-            "getComputedStyle(document.getElementById('timeline-bar')).gridRow")
-        self.assertIn("3", row,
-                      f"#timeline-bar should be in grid row 3, got {row}")
-
-    # --- Canvas elements ---
-
-    def test_all_canvases_exist(self):
-        for canvas_id in ["globe-canvas", "traj-canvas", "timeline-canvas"]:
-            el = self._page.query_selector(f"#{canvas_id}")
-            self.assertIsNotNone(el, f"#{canvas_id} must exist")
-
-    def test_canvases_have_nonzero_dimensions(self):
-        for canvas_id in ["globe-canvas", "traj-canvas", "timeline-canvas"]:
-            box = self._page.evaluate(f"""(() => {{
-                const c = document.getElementById('{canvas_id}');
-                const r = c.getBoundingClientRect();
-                return {{w: r.width, h: r.height}};
-            }})()""")
-            self.assertGreater(box["w"], 0,
-                               f"#{canvas_id} width should be > 0")
-            self.assertGreater(box["h"], 0,
-                               f"#{canvas_id} height should be > 0")
-
-    def test_timeline_canvas_has_explicit_height(self):
-        h = self._page.evaluate(
-            "getComputedStyle(document.getElementById('timeline-canvas')).height")
-        self.assertNotEqual(h, "0px",
-                            f"#timeline-canvas computed height should not be 0px")
-
-    # --- Telemetry panel elements ---
-
-    def test_telemetry_value_elements_exist(self):
-        required_ids = ["t-alt", "t-vel", "t-vvert", "t-vhoriz",
-                        "t-apo", "t-pe", "met-display",
-                        "t-mass", "t-gforce", "t-mach", "t-dynp",
-                        "t-tta", "t-ttp"]
-        for eid in required_ids:
-            el = self._page.query_selector(f"#{eid}")
-            self.assertIsNotNone(el, f"Telemetry field #{eid} must exist")
-
-    def test_stage_dv_section_exists(self):
-        self.assertIsNotNone(self._page.query_selector("#stage-dv-section"))
-        self.assertIsNotNone(self._page.query_selector("#stage-dv-bars"))
-
-    def test_vessel_section_exists(self):
-        self.assertIsNotNone(self._page.query_selector("#vessel-section"))
-
-    # --- JavaScript functions ---
-
-    def test_esc_function_exists(self):
-        result = self._page.evaluate("typeof esc")
-        self.assertEqual(result, "function", "esc() must be defined")
-
-    def test_esc_escapes_html(self):
-        result = self._page.evaluate("esc('<script>alert(1)</script>')")
-        self.assertNotIn("<script>", result)
-        self.assertIn("&lt;", result)
-
-    def test_update_stage_dv_bars_exists(self):
-        result = self._page.evaluate("typeof updateStageDVBars")
-        self.assertEqual(result, "function")
-
-    def test_get_canvas_size_exists(self):
-        result = self._page.evaluate("typeof getCanvasSize")
-        self.assertEqual(result, "function")
-
-    def test_project_ballistic_arc_exists(self):
-        result = self._page.evaluate("typeof projectBallisticArc")
-        self.assertEqual(result, "function")
-
-    def test_build_phase_bands_exists(self):
-        result = self._page.evaluate("typeof buildPhaseBands")
-        self.assertEqual(result, "function")
-
-    def test_mission_control_api_object(self):
-        result = self._page.evaluate("typeof window.MissionControl")
-        self.assertEqual(result, "object",
-                         "window.MissionControl API object must exist")
-        methods = self._page.evaluate("""
-            Object.keys(window.MissionControl).filter(
-                k => typeof window.MissionControl[k] === 'function')
-        """)
-        self.assertIn("loadScenario", methods)
-        self.assertIn("controlPlayback", methods)
-
-    # --- Scenario panel ---
-
-    def test_scenario_panel_exists(self):
-        panel = self._page.query_selector("#scenario-panel")
-        self.assertIsNotNone(panel, "Scenario control panel must exist")
-
-    def test_scenario_preset_dropdown(self):
-        select = self._page.query_selector("#sc-preset")
-        self.assertIsNotNone(select, "Preset scenario dropdown must exist")
-        self._page.evaluate("fetchPresets()")
-        self._page.wait_for_timeout(500)
-        options = self._page.evaluate("""
-            Array.from(document.getElementById('sc-preset').options)
-                 .map(o => o.value)
-        """)
-        self.assertIn("nominal", options)
-        self.assertIn("steep_ascent", options)
-
-    def test_playback_controls_exist(self):
-        for btn_id in ["sc-play-btn", "sc-pause-btn", "sc-reset-btn"]:
-            el = self._page.query_selector(f"#{btn_id}")
-            self.assertIsNotNone(el, f"Playback button #{btn_id} must exist")
-
-    # --- Advisory / Gates ---
-
-    def test_advisory_panel_exists(self):
-        el = self._page.query_selector("#advisory-action")
-        self.assertIsNotNone(el, "Advisory action element must exist")
-
-    def test_gates_container_exists(self):
-        el = self._page.query_selector("#gates-list")
-        self.assertIsNotNone(el, "Gates container must exist")
-
-    # --- Constants loaded ---
-
-    def test_kerbin_constants_loaded(self):
-        r_km = self._page.evaluate("typeof R_KM !== 'undefined' ? R_KM : null")
-        self.assertIsNotNone(r_km, "R_KM (Kerbin radius) must be defined")
-        self.assertAlmostEqual(r_km, 600.0, places=0)
-
-    # --- CSS custom properties ---
-
-    def test_css_custom_properties_defined(self):
-        props = ["--mc-bg", "--mc-panel", "--mc-accent", "--mc-text",
-                 "--mc-green", "--mc-red"]
-        for prop in props:
-            val = self._page.evaluate(
-                f"getComputedStyle(document.documentElement).getPropertyValue('{prop}').trim()")
-            self.assertTrue(len(val) > 0,
-                            f"CSS custom property {prop} must be defined")
+    p.close()
+    browser.close()
+    pw.stop()
 
 
-if __name__ == "__main__":
-    unittest.main()
+# --- Grid layout ---
+
+def test_shell_grid_display(page):
+    shell = page.query_selector("#shell")
+    assert shell is not None, "#shell element must exist"
+    display = page.evaluate(
+        "getComputedStyle(document.getElementById('shell')).display")
+    assert display == "grid"
+
+
+def test_shell_three_rows(page):
+    rows = page.evaluate(
+        "getComputedStyle(document.getElementById('shell')).gridTemplateRows")
+    parts = rows.strip().split()
+    assert len(parts) == 3, \
+        f"#shell should have 3 grid rows, got {len(parts)}: {rows}"
+
+
+@pytest.mark.parametrize("panel_id", [
+    "topbar", "left-panel", "center-panel", "right-panel", "timeline-bar",
+])
+def test_grid_panels_exist(page, panel_id):
+    el = page.query_selector(f"#{panel_id}")
+    assert el is not None, f"#{panel_id} must exist"
+
+
+def test_center_min_height(page):
+    mh = page.evaluate(
+        "getComputedStyle(document.getElementById('center-panel')).minHeight")
+    assert mh == "0px", \
+        f"#center-panel min-height should be 0px, got {mh}"
+
+
+def test_right_min_height(page):
+    mh = page.evaluate(
+        "getComputedStyle(document.getElementById('right-panel')).minHeight")
+    assert mh == "0px", \
+        f"#right-panel min-height should be 0px, got {mh}"
+
+
+def test_body_overflow(page):
+    overflow = page.evaluate(
+        "getComputedStyle(document.body).overflow")
+    assert overflow == "hidden"
+
+
+def test_timeline_grid_row(page):
+    row = page.evaluate(
+        "getComputedStyle(document.getElementById('timeline-bar')).gridRow")
+    assert "3" in row, \
+        f"#timeline-bar should be in grid row 3, got {row}"
+
+
+# --- Canvas elements ---
+
+@pytest.mark.parametrize("canvas_id", [
+    "globe-canvas", "traj-canvas", "timeline-canvas",
+])
+def test_canvases_exist(page, canvas_id):
+    el = page.query_selector(f"#{canvas_id}")
+    assert el is not None, f"#{canvas_id} must exist"
+
+
+@pytest.mark.parametrize("canvas_id", [
+    "globe-canvas", "traj-canvas", "timeline-canvas",
+])
+def test_canvas_dimensions(page, canvas_id):
+    box = page.evaluate(f"""(() => {{
+        const c = document.getElementById('{canvas_id}');
+        const r = c.getBoundingClientRect();
+        return {{w: r.width, h: r.height}};
+    }})()""")
+    assert box["w"] > 0, f"#{canvas_id} width should be > 0"
+    assert box["h"] > 0, f"#{canvas_id} height should be > 0"
+
+
+def test_timeline_canvas_height(page):
+    h = page.evaluate(
+        "getComputedStyle(document.getElementById('timeline-canvas')).height")
+    assert h != "0px", \
+        f"#timeline-canvas computed height should not be 0px"
+
+
+# --- Telemetry panel elements ---
+
+@pytest.mark.parametrize("eid", [
+    "t-alt", "t-vel", "t-vvert", "t-vhoriz",
+    "t-apo", "t-pe", "met-display",
+    "t-mass", "t-gforce", "t-mach", "t-dynp",
+    "t-tta", "t-ttp",
+])
+def test_telemetry_elements(page, eid):
+    el = page.query_selector(f"#{eid}")
+    assert el is not None, f"Telemetry field #{eid} must exist"
+
+
+def test_stage_dv_section(page):
+    assert page.query_selector("#stage-dv-section") is not None
+    assert page.query_selector("#stage-dv-bars") is not None
+
+
+def test_vessel_section(page):
+    assert page.query_selector("#vessel-section") is not None
+
+
+# --- JavaScript functions ---
+
+def test_esc_fn_exists(page):
+    result = page.evaluate("typeof esc")
+    assert result == "function", "esc() must be defined"
+
+
+def test_esc_escapes(page):
+    result = page.evaluate("esc('<script>alert(1)</script>')")
+    assert "<script>" not in result
+    assert "&lt;" in result
+
+
+def test_stage_dv_bars_fn(page):
+    result = page.evaluate("typeof updateStageDVBars")
+    assert result == "function"
+
+
+def test_canvas_size_fn(page):
+    result = page.evaluate("typeof getCanvasSize")
+    assert result == "function"
+
+
+def test_projection_fn(page):
+    result = page.evaluate("typeof projectBallisticArc")
+    assert result == "function"
+
+
+def test_phase_bands_fn(page):
+    result = page.evaluate("typeof buildPhaseBands")
+    assert result == "function"
+
+
+def test_mc_api_object(page):
+    result = page.evaluate("typeof window.MissionControl")
+    assert result == "object", \
+        "window.MissionControl API object must exist"
+    methods = page.evaluate("""
+        Object.keys(window.MissionControl).filter(
+            k => typeof window.MissionControl[k] === 'function')
+    """)
+    assert "loadScenario" in methods
+    assert "controlPlayback" in methods
+
+
+# --- Scenario panel ---
+
+def test_scenario_panel(page):
+    panel = page.query_selector("#scenario-panel")
+    assert panel is not None, "Scenario control panel must exist"
+
+
+def test_preset_dropdown(page):
+    select = page.query_selector("#sc-preset")
+    assert select is not None, "Preset scenario dropdown must exist"
+    page.evaluate("fetchPresets()")
+    page.wait_for_timeout(500)
+    options = page.evaluate("""
+        Array.from(document.getElementById('sc-preset').options)
+             .map(o => o.value)
+    """)
+    assert "nominal" in options
+    assert "steep_ascent" in options
+
+
+@pytest.mark.parametrize("btn_id", [
+    "sc-play-btn", "sc-pause-btn", "sc-reset-btn",
+])
+def test_playback_controls(page, btn_id):
+    el = page.query_selector(f"#{btn_id}")
+    assert el is not None, f"Playback button #{btn_id} must exist"
+
+
+# --- Advisory / Gates ---
+
+def test_advisory_panel(page):
+    el = page.query_selector("#advisory-action")
+    assert el is not None, "Advisory action element must exist"
+
+
+def test_gates_container(page):
+    el = page.query_selector("#gates-list")
+    assert el is not None, "Gates container must exist"
+
+
+# --- Constants loaded ---
+
+def test_kerbin_constants(page):
+    r_km = page.evaluate("typeof R_KM !== 'undefined' ? R_KM : null")
+    assert r_km is not None, "R_KM (Kerbin radius) must be defined"
+    assert abs(r_km - 600.0) < 1.0
+
+
+# --- CSS custom properties ---
+
+@pytest.mark.parametrize("prop", [
+    "--mc-bg", "--mc-panel", "--mc-accent", "--mc-text",
+    "--mc-green", "--mc-red",
+])
+def test_css_vars(page, prop):
+    val = page.evaluate(
+        f"getComputedStyle(document.documentElement).getPropertyValue('{prop}').trim()")
+    assert len(val) > 0, f"CSS custom property {prop} must be defined"
