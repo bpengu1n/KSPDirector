@@ -10,7 +10,7 @@ simple-websocket>=1.0     # WebSocket transport for threading mode
 websocket-client>=1.7
 
 # Simulation utilities (all stdlib except below)
-# No additional dependencies for sim/ — pure Python 3.10+
+# No additional dependencies for sim/ — pure Python 3.12+
 
 # Optional: for running diagram generation
 # (only needed if regenerating SVG sheets)

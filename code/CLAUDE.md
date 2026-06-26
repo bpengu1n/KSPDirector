@@ -412,7 +412,7 @@ python -m pytest tests/ --cov=sim --cov=mission_control --cov-report=term-missin
 ### CI
 
 GitHub Actions runs the non-browser test suite on every push/PR to `main`
-(Python 3.10/3.11/3.12). Playwright and isolation tests are excluded because
+(Python 3.12/3.13/3.14). Playwright and isolation tests are excluded because
 CI runners don't have Chromium pre-installed. See `.github/workflows/tests.yml`.
 
 **Before making any change**: run `python -m pytest tests/ -v` and confirm green.

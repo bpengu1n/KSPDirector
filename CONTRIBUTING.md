@@ -5,7 +5,7 @@ need to get started.
 
 ## Prerequisites
 
-- Python 3.10+
+- Python 3.12+
 - Git
 
 ## Setup
@@ -72,7 +72,7 @@ if it runs on a fresh page load.
 ## CI
 
 GitHub Actions runs the non-browser test suite on every push and PR to `main`
-across Python 3.10, 3.11, and 3.12. All three must pass before merging.
+across Python 3.12, 3.13, and 3.14. All three must pass before merging.
 
 Playwright and isolation tests are excluded from CI (no browser available).
 Run them locally before submitting.
