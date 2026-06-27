@@ -539,9 +539,7 @@ class FlightDirector:
         if self._prev_lf is not None and self._prev_met is not None:
             dt = current_met - self._prev_met
             if dt < 0:
-                self._burn_rate = 0.0
-                self._flight_score = None
-                self._has_boosters = True
+                self.reset()
             elif dt > 0:
                 raw_rate = (self._prev_lf - lf) / dt
                 alpha = 0.3
