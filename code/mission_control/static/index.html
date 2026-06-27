@@ -1965,7 +1965,7 @@ function updateScenarioSummary(summary) {
     '<b>Pe:</b> ' + esc(String(summary.periapsis_km)) + ' km';
 }
 
-function resetMissionState(opts) {
+function resetMissionState() {
   actualTraj = [];
   _eventLog.length = 0;
   _prevPhase = null;
@@ -1975,9 +1975,11 @@ function resetMissionState(opts) {
   if (_abortAlarmInterval) { clearInterval(_abortAlarmInterval); _abortAlarmInterval = null; }
   if (_countdownInterval) { clearInterval(_countdownInterval); _countdownInterval = null; }
   _prevAdvisoryLevel = 'NOMINAL';
-  _prelaunchDismissed = false;
-  const overlay = el('prelaunch-overlay');
-  if (overlay) overlay.classList.remove('hidden');
+  if (!_overlayPanel && _showChecklist) {
+    _prelaunchDismissed = false;
+    const overlay = el('prelaunch-overlay');
+    if (overlay) overlay.classList.remove('hidden');
+  }
   const shell = document.getElementById('shell');
   if (shell) shell.classList.remove('alert-flash-CAUTION', 'alert-flash-WARNING', 'alert-flash-ABORT');
   const logEl = el('event-log');
