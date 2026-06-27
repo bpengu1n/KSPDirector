@@ -230,6 +230,11 @@ def detect_phase(state: dict, prev_phase: FlightPhase = FlightPhase.UNKNOWN) -> 
 
 
 # ---------------------------------------------------------------------------
+# Vehicle constants (single source of truth — mirrors sim/constants.py)
+# ---------------------------------------------------------------------------
+FULL_LF = 360.0   # FL-T800 LiquidFuel capacity in KSP units (P0-01 fix: NOT 4000)
+
+# ---------------------------------------------------------------------------
 # Go/No-Go gate logic
 # ---------------------------------------------------------------------------
 
@@ -246,10 +251,6 @@ def assess_gates(state: dict, phase: FlightPhase,
     lf     = state.get("liquid_fuel") or 0
     met    = state.get("mission_time") or 0
 
-    # FL-T800 LiquidFuel: 4.0t propellant at 9:11 LF:OX ratio → 1.8t LF
-    # KSP unit density = 0.005 t/unit → 1.8 / 0.005 = 360 units
-    # Fix P0-01: was incorrectly set to 4000 (conflated t with KSP units)
-    FULL_LF = 360.0
     lf_pct = (lf / FULL_LF) * 100.0
 
     def gate(phase_name, go, marginal, nogo, current_val=None, units=""):
@@ -348,8 +349,6 @@ def generate_advisory(state: dict, phase: FlightPhase,
     lf     = state.get("liquid_fuel") or 0
     pitch  = state.get("pitch") or 0    # deg, +up/-down from horizon in KSP
     vel    = state.get("velocity") or 0
-    # Fix P0-01: FULL_LF = 360 KSP units (FL-T800 LiquidFuel; see assess_gates)
-    FULL_LF = 360.0
     lf_pct = (lf / FULL_LF) * 100.0
 
     # ---- ABORT conditions ----
@@ -489,6 +488,7 @@ class FlightDirector:
         self._prev_lf: Optional[float] = None
         self._prev_met: Optional[float] = None
         self._burn_rate: float = 0.0
+        self._flight_score: Optional[dict] = None
 
     def update(self, state: dict) -> dict:
         """Process one telemetry snapshot and return the full director output."""
@@ -517,7 +517,9 @@ class FlightDirector:
         current_met = state.get("mission_time") or 0
         if self._prev_lf is not None and self._prev_met is not None:
             dt = current_met - self._prev_met
-            if dt > 0:
+            if dt < 0:
+                self._burn_rate = 0.0
+            elif dt > 0:
                 raw_rate = (self._prev_lf - lf) / dt
                 alpha = 0.3
                 self._burn_rate = alpha * max(0.0, raw_rate) + (1 - alpha) * self._burn_rate
@@ -531,21 +533,20 @@ class FlightDirector:
         consumables = {
             "burn_rate": round(self._burn_rate, 3),
             "time_to_depletion": round(ttd, 1) if ttd is not None else None,
-            "liquid_fuel_pct": round((lf / 360.0) * 100, 1),
+            "liquid_fuel_pct": round((lf / FULL_LF) * 100, 1),
         }
 
-        # Flight efficiency scoring (UX P3-14)
-        flight_score = None
-        if phase == FlightPhase.ORBIT:
+        # Flight efficiency scoring (UX P3-14) — computed once on first ORBIT tick
+        if phase == FlightPhase.ORBIT and self._flight_score is None:
             apo_km = (state.get("apoapsis") or 0) / 1000.0
             pe_km = (state.get("periapsis") or 0) / 1000.0
             target_alt = 80.0
             apo_err = abs(apo_km - target_alt)
             pe_err = abs(pe_km - target_alt)
             orbital_accuracy = max(0, 100 - (apo_err + pe_err) * 2)
-            fuel_efficiency = min(100, (lf / 360.0) * 100)
+            fuel_efficiency = min(100, (lf / FULL_LF) * 100)
             overall = round(orbital_accuracy * 0.6 + fuel_efficiency * 0.4)
-            flight_score = {
+            self._flight_score = {
                 "overall": max(0, min(100, overall)),
                 "orbital_accuracy": round(max(0, min(100, orbital_accuracy))),
                 "fuel_efficiency": round(max(0, min(100, fuel_efficiency))),
@@ -567,6 +568,6 @@ class FlightDirector:
             "nominal_at_alt":  nominal_at_alt,
             "consumables": consumables,
         }
-        if flight_score is not None:
-            result["flight_score"] = flight_score
+        if self._flight_score is not None:
+            result["flight_score"] = self._flight_score
         return result

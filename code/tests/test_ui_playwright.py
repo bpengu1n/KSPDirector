@@ -323,7 +323,7 @@ def test_mission_name_syncs_houston_api(page):
     assert mission == "VOSTOK 1"
     page.evaluate("setMissionName('')")
     default = page.evaluate("window.MissionControl.mission")
-    assert default == "PERSEUS-1"
+    assert default == "PERSEUS 1"
 
 
 def test_apply_mission_name_updates_input(page):

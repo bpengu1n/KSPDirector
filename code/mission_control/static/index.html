@@ -840,7 +840,7 @@ function applyMissionName(name) {
   const display = name || 'PERSEUS 1';
   if (nameEl) nameEl.textContent = display + ' · MISSION CONTROL';
   document.title = display + ' · MISSION CONTROL';
-  if (window.MissionControl) window.MissionControl.mission = name || 'PERSEUS-1';
+  if (window.MissionControl) window.MissionControl.mission = name || 'PERSEUS 1';
   const input = document.getElementById('sc-mission-name');
   if (input && input.value !== (name || '')) input.value = name || '';
 }
@@ -1776,7 +1776,11 @@ function playAdvisoryAlert(level) {
   if (level === _prevAdvisoryLevel) return;
   if (_abortAlarmInterval) { clearInterval(_abortAlarmInterval); _abortAlarmInterval = null; }
   const priority = { NOMINAL: 0, CAUTION: 1, WARNING: 2, ABORT: 3 };
-  if ((priority[level] || 0) <= (priority[_prevAdvisoryLevel] || 0)) { _prevAdvisoryLevel = level; return; }
+  if ((priority[level] || 0) <= (priority[_prevAdvisoryLevel] || 0)) {
+    const shell = document.getElementById('shell');
+    if (shell) shell.classList.remove('alert-flash-CAUTION', 'alert-flash-WARNING', 'alert-flash-ABORT');
+    _prevAdvisoryLevel = level; return;
+  }
   _prevAdvisoryLevel = level;
 
   if (level === 'CAUTION') {
@@ -1964,6 +1968,19 @@ function scPause()  { fetch('/api/scenario/pause',  { method:'POST' }); }
 function scReset()  {
   fetch('/api/scenario/reset', { method:'POST' }).then(() => {
     actualTraj = [];
+    _eventLog.length = 0;
+    _prevPhase = null;
+    _prevGateStatuses = {};
+    _prevLoggedAdvisoryLevel = 'NOMINAL';
+    _scoreShown = false;
+    if (_abortAlarmInterval) { clearInterval(_abortAlarmInterval); _abortAlarmInterval = null; }
+    _prevAdvisoryLevel = 'NOMINAL';
+    const shell = document.getElementById('shell');
+    if (shell) shell.classList.remove('alert-flash-CAUTION', 'alert-flash-WARNING', 'alert-flash-ABORT');
+    const logEl = el('event-log');
+    if (logEl) logEl.innerHTML = '';
+    const scoreOverlay = el('flight-score-overlay');
+    if (scoreOverlay) scoreOverlay.style.display = 'none';
     renderAll();
   });
 }
@@ -1992,6 +2009,20 @@ function updatePlaybackUI(pb) {
 socket.on('scenario_loaded', data => {
   if (data.summary) updateScenarioSummary(data.summary);
   actualTraj = [];
+  _eventLog.length = 0;
+  _prevPhase = null;
+  _prevGateStatuses = {};
+  _prevLoggedAdvisoryLevel = 'NOMINAL';
+  _scoreShown = false;
+  _prelaunchDismissed = false;
+  if (_abortAlarmInterval) { clearInterval(_abortAlarmInterval); _abortAlarmInterval = null; }
+  _prevAdvisoryLevel = 'NOMINAL';
+  const shell = document.getElementById('shell');
+  if (shell) shell.classList.remove('alert-flash-CAUTION', 'alert-flash-WARNING', 'alert-flash-ABORT');
+  const logEl = el('event-log');
+  if (logEl) logEl.innerHTML = '';
+  const scoreOverlay = el('flight-score-overlay');
+  if (scoreOverlay) scoreOverlay.style.display = 'none';
   renderAll();
 });
 
@@ -2041,7 +2072,9 @@ function trackEvents(state, director) {
 
   if (director.advisory) {
     const level = director.advisory.level;
-    if (level !== 'NOMINAL' && level !== _prevLoggedAdvisoryLevel) {
+    if (level === 'NOMINAL') {
+      _prevLoggedAdvisoryLevel = 'NOMINAL';
+    } else if (level !== _prevLoggedAdvisoryLevel) {
       logEvent(met, 'advisory', level + ': ' + director.advisory.action);
       _prevLoggedAdvisoryLevel = level;
     }
