@@ -285,6 +285,7 @@ def api_scenario_reset():
     if not isinstance(session.telemetry_client, ScriptedTelemetry):
         return jsonify({"error": "No scripted scenario loaded"}), 400
     session.telemetry_client.reset()
+    session.flight_director.reset()
     return jsonify({"ok": True})
 
 
@@ -351,6 +352,7 @@ def on_playback_control(data):
         session.telemetry_client.resume()
     elif action == "reset":
         session.telemetry_client.reset()
+        session.flight_director.reset()
     elif action == "speed":
         speed = data.get("speed", 1.0)
         if isinstance(speed, (int, float)) and 0.25 <= speed <= 10.0:

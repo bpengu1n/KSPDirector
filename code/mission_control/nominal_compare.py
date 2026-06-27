@@ -239,11 +239,13 @@ FULL_LF = 360.0   # FL-T800 LiquidFuel capacity in KSP units (P0-01 fix: NOT 400
 # ---------------------------------------------------------------------------
 
 def assess_gates(state: dict, phase: FlightPhase,
-                 fuel_at_core_sep: Optional[float] = None) -> list[GateStatus]:
+                 fuel_at_core_sep: Optional[float] = None,
+                 has_boosters: bool = True) -> list[GateStatus]:
     """
-    Return go/no-go assessment for all four ascent gates.
+    Return go/no-go assessment for all five ascent gates.
     fuel_at_core_sep: liquid fuel (units) at the moment the core was jettisoned,
                       used to compute Terrier fuel fraction. If None, estimated.
+    has_boosters: whether vehicle has SRBs (False skips BOOSTER SEP gate).
     """
     alt_km = (state.get("altitude") or 0) / 1000.0
     apo_km = (state.get("apoapsis") or 0) / 1000.0
@@ -263,7 +265,9 @@ def assess_gates(state: dict, phase: FlightPhase,
     # Gate 0: Booster separation (FC-01 UX review)
     sf = state.get("solid_fuel") or 0
     vel = state.get("velocity") or 0
-    if phase == FlightPhase.PRELAUNCH or (phase == FlightPhase.BOOST and sf > 1):
+    if not has_boosters:
+        gates.append(GateStatus("BOOSTER SEP", "GO", "No SRBs"))
+    elif phase == FlightPhase.PRELAUNCH or (phase == FlightPhase.BOOST and sf > 1):
         gates.append(GateStatus("BOOSTER SEP", "NOT-YET", "Awaiting SRB burnout"))
     else:
         sep_ok = alt_km > 1.5 and vel > 150
@@ -489,6 +493,18 @@ class FlightDirector:
         self._prev_met: Optional[float] = None
         self._burn_rate: float = 0.0
         self._flight_score: Optional[dict] = None
+        self._has_boosters: bool = True
+
+    def reset(self):
+        """Reset all mutable state for scenario replay."""
+        self._phase = FlightPhase.PRELAUNCH
+        self._fuel_at_core_sep = None
+        self._prev_apo_km = None
+        self._prev_lf = None
+        self._prev_met = None
+        self._burn_rate = 0.0
+        self._flight_score = None
+        self._has_boosters = True
 
     def update(self, state: dict) -> dict:
         """Process one telemetry snapshot and return the full director output."""
@@ -498,6 +514,9 @@ class FlightDirector:
         if self._phase == FlightPhase.CORE and phase == FlightPhase.TERRIER:
             self._fuel_at_core_sep = state.get("liquid_fuel")
 
+        if self._phase == FlightPhase.PRELAUNCH and phase == FlightPhase.CORE:
+            self._has_boosters = False
+
         self._phase = phase
 
         met = state.get("mission_time") or 0
@@ -505,7 +524,8 @@ class FlightDirector:
         nominal_at_t   = self.nominal.at_time(met)
         nominal_at_alt = self.nominal.at_altitude(alt)
 
-        gates = assess_gates(state, phase, self._fuel_at_core_sep)
+        gates = assess_gates(state, phase, self._fuel_at_core_sep,
+                             has_boosters=self._has_boosters)
         advisory = generate_advisory(state, phase, nominal_at_alt,
                                      prev_apo_km=self._prev_apo_km)
 
@@ -519,6 +539,7 @@ class FlightDirector:
             dt = current_met - self._prev_met
             if dt < 0:
                 self._burn_rate = 0.0
+                self._flight_score = None
             elif dt > 0:
                 raw_rate = (self._prev_lf - lf) / dt
                 alpha = 0.3

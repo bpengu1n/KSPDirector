@@ -1133,6 +1133,7 @@ socket.on('director_error', data => {
 
 socket.on('disconnect', () => {
   setConnBadge('off', 'DISCONNECTED');
+  if (_abortAlarmInterval) { clearInterval(_abortAlarmInterval); _abortAlarmInterval = null; }
 });
 
 // ---------------------------------------------------------------
@@ -1760,6 +1761,7 @@ let _abortAlarmInterval = null;
 
 function _playTone(freq, dur, type) {
   if (!_alertCtx) return;
+  if (_alertCtx.state === 'suspended') _alertCtx.resume();
   try {
     const osc = _alertCtx.createOscillator();
     const gain = _alertCtx.createGain();
@@ -1963,26 +1965,32 @@ function updateScenarioSummary(summary) {
     '<b>Pe:</b> ' + esc(String(summary.periapsis_km)) + ' km';
 }
 
+function resetMissionState(opts) {
+  actualTraj = [];
+  _eventLog.length = 0;
+  _prevPhase = null;
+  _prevGateStatuses = {};
+  _prevLoggedAdvisoryLevel = 'NOMINAL';
+  _scoreShown = false;
+  if (_abortAlarmInterval) { clearInterval(_abortAlarmInterval); _abortAlarmInterval = null; }
+  if (_countdownInterval) { clearInterval(_countdownInterval); _countdownInterval = null; }
+  _prevAdvisoryLevel = 'NOMINAL';
+  _prelaunchDismissed = false;
+  const overlay = el('prelaunch-overlay');
+  if (overlay) overlay.classList.remove('hidden');
+  const shell = document.getElementById('shell');
+  if (shell) shell.classList.remove('alert-flash-CAUTION', 'alert-flash-WARNING', 'alert-flash-ABORT');
+  const logEl = el('event-log');
+  if (logEl) logEl.innerHTML = '';
+  const scoreOverlay = el('flight-score-overlay');
+  if (scoreOverlay) scoreOverlay.style.display = 'none';
+  renderAll();
+}
+
 function scPlay()   { fetch('/api/scenario/start',  { method:'POST' }); }
 function scPause()  { fetch('/api/scenario/pause',  { method:'POST' }); }
 function scReset()  {
-  fetch('/api/scenario/reset', { method:'POST' }).then(() => {
-    actualTraj = [];
-    _eventLog.length = 0;
-    _prevPhase = null;
-    _prevGateStatuses = {};
-    _prevLoggedAdvisoryLevel = 'NOMINAL';
-    _scoreShown = false;
-    if (_abortAlarmInterval) { clearInterval(_abortAlarmInterval); _abortAlarmInterval = null; }
-    _prevAdvisoryLevel = 'NOMINAL';
-    const shell = document.getElementById('shell');
-    if (shell) shell.classList.remove('alert-flash-CAUTION', 'alert-flash-WARNING', 'alert-flash-ABORT');
-    const logEl = el('event-log');
-    if (logEl) logEl.innerHTML = '';
-    const scoreOverlay = el('flight-score-overlay');
-    if (scoreOverlay) scoreOverlay.style.display = 'none';
-    renderAll();
-  });
+  fetch('/api/scenario/reset', { method:'POST' }).then(() => { resetMissionState(); });
 }
 
 function scSpeed(s) {
@@ -2008,22 +2016,7 @@ function updatePlaybackUI(pb) {
 
 socket.on('scenario_loaded', data => {
   if (data.summary) updateScenarioSummary(data.summary);
-  actualTraj = [];
-  _eventLog.length = 0;
-  _prevPhase = null;
-  _prevGateStatuses = {};
-  _prevLoggedAdvisoryLevel = 'NOMINAL';
-  _scoreShown = false;
-  _prelaunchDismissed = false;
-  if (_abortAlarmInterval) { clearInterval(_abortAlarmInterval); _abortAlarmInterval = null; }
-  _prevAdvisoryLevel = 'NOMINAL';
-  const shell = document.getElementById('shell');
-  if (shell) shell.classList.remove('alert-flash-CAUTION', 'alert-flash-WARNING', 'alert-flash-ABORT');
-  const logEl = el('event-log');
-  if (logEl) logEl.innerHTML = '';
-  const scoreOverlay = el('flight-score-overlay');
-  if (scoreOverlay) scoreOverlay.style.display = 'none';
-  renderAll();
+  resetMissionState();
 });
 
 socket.on('playback_status', data => {
@@ -2196,7 +2189,7 @@ if (!_showChecklist) _prelaunchDismissed = true;
 //   - Reset trajectory: window.MissionControl.clearTrajectory()
 window.MissionControl = {
   version: '1.1.0',
-  mission: _missionName || 'PERSEUS-1',
+  mission: _missionName || 'PERSEUS 1',
 
   getState() { return { ...latestState }; },
   getDirector() { return { ...latestDirector }; },
