@@ -14,9 +14,19 @@
 - **Custom mission branding** (UX-P3-13): Persistent mission name setting via localStorage. Editable in the Scenario panel under "Mission Settings". Priority chain: URL param `?mission=NAME` (one-time override, auto-saves) → localStorage → server `--mission-name` CLI arg via `/api/config` → default "PERSEUS 1". Reflected in `window.MissionControl.mission`.
 - **Server `/api/config` endpoint**: Serves server-side configuration (mission name).
 - **44 new tests** (`test_ux_review.py`): Backend logic tests for booster SEP gate (7), advisory pitch reference (3), consumables trending (4), flight scoring (3), alert escalation (3); source-level verification for overlay mode (4), checklist (5), branding (8), event log (6), server config (1).
+- `tests/test_isolation.py`: Meta-test that runs all 230 Playwright tests in natural, reversed, and random order via subprocesses, verifying 0 failures in each ordering.
+- `pytest-randomly` and `pytest-reverse` test dependencies for order-independence verification.
 
 ### Added (documentation)
 - **UX_REVIEW.md**: Comprehensive team assessment of all 15 UX survey recommendations. 9 items implemented, 7 deferred with rationale, 1 declined. Includes implementation priority order, stability risk assessment, and domain fidelity evaluation.
+
+### Changed
+- **Expanded Playwright UI tests from 54 to 230**: Covers telemetry panel updates, flight director advisory classes, stage dV bar rendering, scenario panel interactions, XSS escaping, globe zoom, ballistic projection, Houston UI integration, CSS custom properties, canvas drawing, and Socket.IO initialization.
+- **Full test isolation via autouse `reset_ui` fixture**: Every Playwright test starts from an identical clean baseline — all mutable JS globals, DOM elements, and UI state reset before each test. Eliminates order-dependent failures.
+- **CI workflow migrated from unittest to pytest**: `tests.yml` now installs `pytest`, `pytest-randomly`, and `pytest-reverse`, and runs `python -m pytest` instead of `python -m unittest`. Playwright and isolation tests excluded (no browser in CI).
+
+### Fixed
+- **Flaky canvas cache tests**: `test_invalidate_on_resize_direct` and `test_invalidate_canvas_sizes` use atomic JS evaluation to prevent animation-frame race conditions between separate `page.evaluate()` calls.
 
 ## [1.2.0] — 2026-06-26
 
