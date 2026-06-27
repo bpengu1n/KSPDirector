@@ -1797,7 +1797,7 @@ function playAdvisoryAlert(level) {
     _playTone(440, 0.2);
   } else if (level === 'WARNING') {
     _playTone(660, 0.15);
-    setTimeout(() => _playTone(660, 0.15), 200);
+    _abortAlarmTimeouts.push(setTimeout(() => _playTone(660, 0.15), 200));
   } else if (level === 'ABORT') {
     _playTone(880, 0.3);
     _abortAlarmTimeouts.push(setTimeout(() => _playTone(880, 0.3), 350));

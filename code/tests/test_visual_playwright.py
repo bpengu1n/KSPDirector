@@ -52,43 +52,7 @@ def _start_server(port):
                  allow_unsafe_werkzeug=True, log_output=False)
 
 
-_RESET_JS = """(() => {
-    latestState = {};
-    latestDirector = {};
-    actualTraj = [];
-    _globeZoomMul = 1.0;
-    _lastStageCount = -1;
-    _prevAdvisoryLevel = 'NOMINAL';
-    _eventLog.length = 0;
-    _prevPhase = null;
-    _prevGateStatuses = {};
-    _prevLoggedAdvisoryLevel = 'NOMINAL';
-    _scoreShown = false;
-    _prelaunchDismissed = false;
-    if (_abortAlarmInterval) { clearInterval(_abortAlarmInterval); _abortAlarmInterval = null; }
-    if (_countdownInterval) { clearInterval(_countdownInterval); _countdownInterval = null; }
-    if (typeof _abortAlarmTimeouts !== 'undefined') {
-        _abortAlarmTimeouts.forEach(id => clearTimeout(id));
-        _abortAlarmTimeouts.length = 0;
-    }
-    for (const k of Object.keys(_canvasSizes)) delete _canvasSizes[k];
-    const abox = document.getElementById('advisory-box');
-    if (abox) abox.className = 'NOMINAL';
-    const alevel = document.getElementById('advisory-level');
-    if (alevel) { alevel.textContent = 'NOMINAL'; alevel.className = 'NOMINAL'; }
-    const aaction = document.getElementById('advisory-action');
-    if (aaction) aaction.textContent = 'STANDING BY';
-    const areason = document.getElementById('advisory-reason');
-    if (areason) areason.textContent = 'Awaiting launch';
-    document.getElementById('gates-list').innerHTML = '';
-    document.getElementById('phase-badge').textContent = 'PRELAUNCH';
-    const shell = document.getElementById('shell');
-    if (shell) shell.classList.remove('alert-flash-CAUTION', 'alert-flash-WARNING', 'alert-flash-ABORT');
-    const eventLog = document.getElementById('event-log');
-    if (eventLog) eventLog.innerHTML = '';
-    const scoreOverlay = document.getElementById('flight-score-overlay');
-    if (scoreOverlay) scoreOverlay.style.display = 'none';
-})()"""
+from tests.playwright_helpers import RESET_JS as _RESET_JS
 
 
 @pytest.fixture(autouse=True)

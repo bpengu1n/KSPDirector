@@ -394,7 +394,7 @@ def generate_advisory(state: dict, phase: FlightPhase,
             return Advisory(
                 level="CAUTION",
                 action="FLATTEN PITCH — APOAPSIS HIGH",
-                reason=f"Apoapsis {apo_km:.0f} km (target 80) — ease off climb, build periapsis",
+                reason=f"Apoapsis {apo_km:.0f} km (target {TARGET_ORBIT_ALT:.0f}) — ease off climb, build periapsis",
             )
         if apo_km >= 70 and pe_km > 50:
             return Advisory(
@@ -450,7 +450,7 @@ def generate_advisory(state: dict, phase: FlightPhase,
             return Advisory(
                 level="CAUTION",
                 action="BURN PROGRADE — LEAD APOAPSIS",
-                reason=f"Pe {pe_km:.0f} km — start burn {2} s before Ap, burn until Pe ~80 km",
+                reason=f"Pe {pe_km:.0f} km — start burn {2} s before Ap, burn until Pe ~{TARGET_ORBIT_ALT:.0f} km",
             )
         return Advisory("NOMINAL", "MAINTAINING ORBIT",
                         f"Pe {pe_km:.0f} km, Ap {apo_km:.0f} km")
