@@ -233,6 +233,7 @@ def detect_phase(state: dict, prev_phase: FlightPhase = FlightPhase.UNKNOWN) -> 
 # Vehicle constants (single source of truth — mirrors sim/constants.py)
 # ---------------------------------------------------------------------------
 FULL_LF = 360.0   # FL-T800 LiquidFuel capacity in KSP units (P0-01 fix: NOT 4000)
+TARGET_ORBIT_ALT = 80.0  # Target orbit altitude in km (design parameter)
 
 # ---------------------------------------------------------------------------
 # Go/No-Go gate logic
@@ -540,6 +541,7 @@ class FlightDirector:
             if dt < 0:
                 self._burn_rate = 0.0
                 self._flight_score = None
+                self._has_boosters = True
             elif dt > 0:
                 raw_rate = (self._prev_lf - lf) / dt
                 alpha = 0.3
@@ -561,9 +563,8 @@ class FlightDirector:
         if phase == FlightPhase.ORBIT and self._flight_score is None:
             apo_km = (state.get("apoapsis") or 0) / 1000.0
             pe_km = (state.get("periapsis") or 0) / 1000.0
-            target_alt = 80.0
-            apo_err = abs(apo_km - target_alt)
-            pe_err = abs(pe_km - target_alt)
+            apo_err = abs(apo_km - TARGET_ORBIT_ALT)
+            pe_err = abs(pe_km - TARGET_ORBIT_ALT)
             orbital_accuracy = max(0, 100 - (apo_err + pe_err) * 2)
             fuel_efficiency = min(100, (lf / FULL_LF) * 100)
             overall = round(orbital_accuracy * 0.6 + fuel_efficiency * 0.4)

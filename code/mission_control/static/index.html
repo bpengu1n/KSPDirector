@@ -1133,7 +1133,7 @@ socket.on('director_error', data => {
 
 socket.on('disconnect', () => {
   setConnBadge('off', 'DISCONNECTED');
-  if (_abortAlarmInterval) { clearInterval(_abortAlarmInterval); _abortAlarmInterval = null; }
+  _clearAbortAlarm();
 });
 
 // ---------------------------------------------------------------
@@ -1758,6 +1758,13 @@ function drawTimeline() {
 let _prevAdvisoryLevel = 'NOMINAL';
 const _alertCtx = typeof AudioContext !== 'undefined' ? new AudioContext() : null;
 let _abortAlarmInterval = null;
+const _abortAlarmTimeouts = [];
+
+function _clearAbortAlarm() {
+  if (_abortAlarmInterval) { clearInterval(_abortAlarmInterval); _abortAlarmInterval = null; }
+  _abortAlarmTimeouts.forEach(id => clearTimeout(id));
+  _abortAlarmTimeouts.length = 0;
+}
 
 function _playTone(freq, dur, type) {
   if (!_alertCtx) return;
@@ -1771,12 +1778,13 @@ function _playTone(freq, dur, type) {
     gain.gain.setValueAtTime(0.08, _alertCtx.currentTime);
     gain.gain.exponentialRampToValueAtTime(0.001, _alertCtx.currentTime + dur);
     osc.start(); osc.stop(_alertCtx.currentTime + dur);
+    osc.onended = () => { try { gain.disconnect(); } catch(e2) {} };
   } catch(e) {}
 }
 
 function playAdvisoryAlert(level) {
   if (level === _prevAdvisoryLevel) return;
-  if (_abortAlarmInterval) { clearInterval(_abortAlarmInterval); _abortAlarmInterval = null; }
+  _clearAbortAlarm();
   const priority = { NOMINAL: 0, CAUTION: 1, WARNING: 2, ABORT: 3 };
   if ((priority[level] || 0) <= (priority[_prevAdvisoryLevel] || 0)) {
     const shell = document.getElementById('shell');
@@ -1792,8 +1800,8 @@ function playAdvisoryAlert(level) {
     setTimeout(() => _playTone(660, 0.15), 200);
   } else if (level === 'ABORT') {
     _playTone(880, 0.3);
-    setTimeout(() => _playTone(880, 0.3), 350);
-    _abortAlarmInterval = setInterval(() => { _playTone(880, 0.3); setTimeout(() => _playTone(880, 0.3), 350); }, 2000);
+    _abortAlarmTimeouts.push(setTimeout(() => _playTone(880, 0.3), 350));
+    _abortAlarmInterval = setInterval(() => { _playTone(880, 0.3); _abortAlarmTimeouts.push(setTimeout(() => _playTone(880, 0.3), 350)); }, 2000);
   }
 
   // Visual flash on shell (UX P1-6)
@@ -1972,7 +1980,7 @@ function resetMissionState() {
   _prevGateStatuses = {};
   _prevLoggedAdvisoryLevel = 'NOMINAL';
   _scoreShown = false;
-  if (_abortAlarmInterval) { clearInterval(_abortAlarmInterval); _abortAlarmInterval = null; }
+  _clearAbortAlarm();
   if (_countdownInterval) { clearInterval(_countdownInterval); _countdownInterval = null; }
   _prevAdvisoryLevel = 'NOMINAL';
   if (!_overlayPanel && _showChecklist) {

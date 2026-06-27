@@ -53,6 +53,20 @@ _RESET_JS = """(() => {
     _lastStageCount = -1;
     _prevAdvisoryLevel = 'NOMINAL';
 
+    // UX review globals
+    _eventLog.length = 0;
+    _prevPhase = null;
+    _prevGateStatuses = {};
+    _prevLoggedAdvisoryLevel = 'NOMINAL';
+    _scoreShown = false;
+    _prelaunchDismissed = false;
+    if (_abortAlarmInterval) { clearInterval(_abortAlarmInterval); _abortAlarmInterval = null; }
+    if (_countdownInterval) { clearInterval(_countdownInterval); _countdownInterval = null; }
+    if (typeof _abortAlarmTimeouts !== 'undefined') {
+        _abortAlarmTimeouts.forEach(id => clearTimeout(id));
+        _abortAlarmTimeouts.length = 0;
+    }
+
     // Canvas size cache (const object — clear keys, don't reassign)
     for (const k of Object.keys(_canvasSizes)) delete _canvasSizes[k];
 
@@ -107,6 +121,14 @@ _RESET_JS = """(() => {
     // Playback progress bar
     const bar = document.getElementById('sc-pb-bar');
     if (bar) bar.style.width = '0%';
+
+    // UX review DOM elements
+    const shell = document.getElementById('shell');
+    if (shell) shell.classList.remove('alert-flash-CAUTION', 'alert-flash-WARNING', 'alert-flash-ABORT');
+    const eventLog = document.getElementById('event-log');
+    if (eventLog) eventLog.innerHTML = '';
+    const scoreOverlay = document.getElementById('flight-score-overlay');
+    if (scoreOverlay) scoreOverlay.style.display = 'none';
 })()"""
 
 

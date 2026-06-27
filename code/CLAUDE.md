@@ -271,7 +271,7 @@ result = fd.update(state)
 # Returns:
 # {
 #   'phase': 'TERRIER',
-#   'advisory': {'level': 'CAUTION', 'action': 'PITCH TOWARD HORIZON  (+22° STEEP)',
+#   'advisory': {'level': 'CAUTION', 'action': 'PITCH TOWARD HORIZON  (+22° STEEP, NOM 45°)',
 #                'reason': '...', 'urgent': False},
 #   'gates': [{'phase': 'CORE B/O', 'status': 'GO', 'detail': '24.6 km Ap'}, ...],
 #   'nominal_at_alt': {'altitude_km': 15.0, 'apoapsis_km': 24.1, ...},
