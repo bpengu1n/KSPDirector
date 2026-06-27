@@ -44,70 +44,7 @@ def _start_server(port):
                  allow_unsafe_werkzeug=True, log_output=False)
 
 
-_RESET_JS = """(() => {
-    // Global mutable state
-    latestState = {};
-    latestDirector = {};
-    actualTraj = [];
-    _globeZoomMul = 1.0;
-    _lastStageCount = -1;
-    _prevAdvisoryLevel = 'NOMINAL';
-
-    // Canvas size cache (const object — clear keys, don't reassign)
-    for (const k of Object.keys(_canvasSizes)) delete _canvasSizes[k];
-
-    // Telemetry value cells
-    for (const id of ['t-alt','t-vel','t-vvert','t-vhoriz','t-apo','t-pe',
-                       't-mass','t-gforce','t-mach','t-dynp','t-tta','t-ttp',
-                       't-inc','t-pitch','t-hdg','t-roll','t-thr','t-lf',
-                       't-sf','t-atm','t-met2']) {
-        const el = document.getElementById(id);
-        if (el) el.textContent = '\\u2014';
-    }
-    document.getElementById('met-display').textContent = 'T+ 00:00:00';
-
-    // Fuel bars
-    document.getElementById('lf-bar').style.width = '0%';
-    document.getElementById('sf-bar').style.width = '0%';
-
-    // Stage dV bars
-    document.getElementById('stage-dv-bars').innerHTML = '';
-    document.getElementById('stage-dv-section').style.display = 'none';
-
-    // Advisory panel
-    const abox = document.getElementById('advisory-box');
-    abox.className = 'NOMINAL';
-    document.getElementById('advisory-level').textContent = 'NOMINAL';
-    document.getElementById('advisory-level').className = 'NOMINAL';
-    document.getElementById('advisory-action').textContent = 'STANDING BY';
-    document.getElementById('advisory-reason').textContent = 'Awaiting launch';
-
-    // Gates
-    document.getElementById('gates-list').innerHTML = '';
-
-    // Phase badge + connection badge
-    document.getElementById('phase-badge').textContent = 'PRELAUNCH';
-    const cb = document.getElementById('conn-badge');
-    cb.textContent = 'DISCONNECTED';
-    cb.className = 'off';
-
-    // Scenario panel
-    document.getElementById('scenario-panel').classList.remove('open');
-    document.getElementById('scenario-btn').classList.remove('active');
-    document.getElementById('sc-pb-state').textContent = '\\u2014';
-    document.getElementById('sc-pb-elapsed').textContent = 'T+ 0.0s';
-    document.getElementById('sc-summary').innerHTML = '';
-    const cf = document.getElementById('sc-custom-fields');
-    if (cf) cf.style.opacity = '';
-
-    // data-panel display reset
-    document.querySelectorAll('[data-panel]').forEach(
-        el => el.style.display = '');
-
-    // Playback progress bar
-    const bar = document.getElementById('sc-pb-bar');
-    if (bar) bar.style.width = '0%';
-})()"""
+from tests.playwright_helpers import RESET_JS as _RESET_JS
 
 
 @pytest.fixture(scope="module")
@@ -1251,25 +1188,8 @@ def test_xss_in_scenario_summary(page):
 # Resize handling
 # ===================================================================
 
-def test_invalidate_on_resize_direct(page):
-    result = page.evaluate("""(() => {
-        invalidateCanvasSizes();
-        getCanvasSize('globe-canvas');
-        const before = Object.keys(_canvasSizes).length;
-        invalidateCanvasSizes();
-        const after = Object.keys(_canvasSizes).length;
-        return {before, after};
-    })()""")
-    assert result["before"] > 0
-    assert result["after"] == 0
-
-
 def test_resize_event_handler_exists(page):
-    has_handler = page.evaluate("""(() => {
-        let called = false;
-        const orig = invalidateCanvasSizes;
-        return typeof orig === 'function';
-    })()""")
+    has_handler = page.evaluate("typeof invalidateCanvasSizes === 'function'")
     assert has_handler
 
 

@@ -230,15 +230,23 @@ def detect_phase(state: dict, prev_phase: FlightPhase = FlightPhase.UNKNOWN) -> 
 
 
 # ---------------------------------------------------------------------------
+# Vehicle constants (single source of truth — mirrors sim/constants.py)
+# ---------------------------------------------------------------------------
+FULL_LF = 360.0   # FL-T800 LiquidFuel capacity in KSP units (P0-01 fix: NOT 4000)
+TARGET_ORBIT_ALT = 80.0  # Target orbit altitude in km (design parameter)
+
+# ---------------------------------------------------------------------------
 # Go/No-Go gate logic
 # ---------------------------------------------------------------------------
 
 def assess_gates(state: dict, phase: FlightPhase,
-                 fuel_at_core_sep: Optional[float] = None) -> list[GateStatus]:
+                 fuel_at_core_sep: Optional[float] = None,
+                 has_boosters: bool = True) -> list[GateStatus]:
     """
-    Return go/no-go assessment for all four ascent gates.
+    Return go/no-go assessment for all five ascent gates.
     fuel_at_core_sep: liquid fuel (units) at the moment the core was jettisoned,
                       used to compute Terrier fuel fraction. If None, estimated.
+    has_boosters: whether vehicle has SRBs (False skips BOOSTER SEP gate).
     """
     alt_km = (state.get("altitude") or 0) / 1000.0
     apo_km = (state.get("apoapsis") or 0) / 1000.0
@@ -246,10 +254,6 @@ def assess_gates(state: dict, phase: FlightPhase,
     lf     = state.get("liquid_fuel") or 0
     met    = state.get("mission_time") or 0
 
-    # FL-T800 LiquidFuel: 4.0t propellant at 9:11 LF:OX ratio → 1.8t LF
-    # KSP unit density = 0.005 t/unit → 1.8 / 0.005 = 360 units
-    # Fix P0-01: was incorrectly set to 4000 (conflated t with KSP units)
-    FULL_LF = 360.0
     lf_pct = (lf / FULL_LF) * 100.0
 
     def gate(phase_name, go, marginal, nogo, current_val=None, units=""):
@@ -258,6 +262,19 @@ def assess_gates(state: dict, phase: FlightPhase,
         return GateStatus(phase_name, "NO-GO", f"{current_val:.1f}{units}" if current_val is not None else "")
 
     gates = []
+
+    # Gate 0: Booster separation (FC-01 UX review)
+    sf = state.get("solid_fuel") or 0
+    vel = state.get("velocity") or 0
+    if not has_boosters:
+        gates.append(GateStatus("BOOSTER SEP", "GO", "No SRBs"))
+    elif phase == FlightPhase.PRELAUNCH or (phase == FlightPhase.BOOST and sf > 1):
+        gates.append(GateStatus("BOOSTER SEP", "NOT-YET", "Awaiting SRB burnout"))
+    else:
+        sep_ok = alt_km > 1.5 and vel > 150
+        sep_marginal = alt_km > 0.5 and vel > 50
+        gates.append(gate("BOOSTER SEP", sep_ok, sep_marginal and not sep_ok,
+                          not sep_marginal, alt_km, " km alt"))
 
     # Gate 1: Core burnout apoapsis
     if phase in (FlightPhase.PRELAUNCH, FlightPhase.BOOST):
@@ -337,8 +354,6 @@ def generate_advisory(state: dict, phase: FlightPhase,
     lf     = state.get("liquid_fuel") or 0
     pitch  = state.get("pitch") or 0    # deg, +up/-down from horizon in KSP
     vel    = state.get("velocity") or 0
-    # Fix P0-01: FULL_LF = 360 KSP units (FL-T800 LiquidFuel; see assess_gates)
-    FULL_LF = 360.0
     lf_pct = (lf / FULL_LF) * 100.0
 
     # ---- ABORT conditions ----
@@ -379,7 +394,7 @@ def generate_advisory(state: dict, phase: FlightPhase,
             return Advisory(
                 level="CAUTION",
                 action="FLATTEN PITCH — APOAPSIS HIGH",
-                reason=f"Apoapsis {apo_km:.0f} km (target 80) — ease off climb, build periapsis",
+                reason=f"Apoapsis {apo_km:.0f} km (target {TARGET_ORBIT_ALT:.0f}) — ease off climb, build periapsis",
             )
         if apo_km >= 70 and pe_km > 50:
             return Advisory(
@@ -410,17 +425,18 @@ def generate_advisory(state: dict, phase: FlightPhase,
                 # KSP pitch is from horizon; pitch_from_vertical = 90 - KSP_pitch
                 actual_pitch_v = 90.0 - pitch
                 diff = actual_pitch_v - nom_pitch_v
+                nom_ksp_pitch = 90.0 - nom_pitch_v
                 if diff > 12:
                     return Advisory(
                         level="CAUTION",
-                        action=f"PITCH TOWARD HORIZON  (+{diff:.0f}° STEEP)",
+                        action=f"PITCH TOWARD HORIZON  (+{diff:.0f}° STEEP, NOM {nom_ksp_pitch:.0f}°)",
                         reason=(f"Flying {diff:.0f}° steeper than nominal — "
                                 f"gaining altitude at cost of horizontal speed"),
                     )
                 elif diff < -12:
                     return Advisory(
                         level="CAUTION",
-                        action=f"PITCH TOWARD VERTICAL  ({-diff:.0f}° SHALLOW)",
+                        action=f"PITCH TOWARD VERTICAL  ({-diff:.0f}° SHALLOW, NOM {nom_ksp_pitch:.0f}°)",
                         reason=(f"Flying {-diff:.0f}° shallower than nominal — "
                                 f"may undershoot apoapsis target"),
                     )
@@ -434,7 +450,7 @@ def generate_advisory(state: dict, phase: FlightPhase,
             return Advisory(
                 level="CAUTION",
                 action="BURN PROGRADE — LEAD APOAPSIS",
-                reason=f"Pe {pe_km:.0f} km — start burn {2} s before Ap, burn until Pe ~80 km",
+                reason=f"Pe {pe_km:.0f} km — start burn {2} s before Ap, burn until Pe ~{TARGET_ORBIT_ALT:.0f} km",
             )
         return Advisory("NOMINAL", "MAINTAINING ORBIT",
                         f"Pe {pe_km:.0f} km, Ap {apo_km:.0f} km")
@@ -471,9 +487,18 @@ class FlightDirector:
 
     def __init__(self, nominal: NominalTrajectory):
         self.nominal = nominal
+        self.reset()
+
+    def reset(self):
+        """Reset all mutable state for scenario replay."""
         self._phase = FlightPhase.PRELAUNCH
-        self._fuel_at_core_sep: Optional[float] = None
-        self._prev_apo_km: Optional[float] = None   # for P2-08 stall detection
+        self._fuel_at_core_sep = None
+        self._prev_apo_km = None
+        self._prev_lf = None
+        self._prev_met = None
+        self._burn_rate = 0.0
+        self._flight_score = None
+        self._has_boosters = True
 
     def update(self, state: dict) -> dict:
         """Process one telemetry snapshot and return the full director output."""
@@ -483,6 +508,9 @@ class FlightDirector:
         if self._phase == FlightPhase.CORE and phase == FlightPhase.TERRIER:
             self._fuel_at_core_sep = state.get("liquid_fuel")
 
+        if self._phase == FlightPhase.PRELAUNCH and phase == FlightPhase.CORE:
+            self._has_boosters = False
+
         self._phase = phase
 
         met = state.get("mission_time") or 0
@@ -490,14 +518,54 @@ class FlightDirector:
         nominal_at_t   = self.nominal.at_time(met)
         nominal_at_alt = self.nominal.at_altitude(alt)
 
-        gates = assess_gates(state, phase, self._fuel_at_core_sep)
+        gates = assess_gates(state, phase, self._fuel_at_core_sep,
+                             has_boosters=self._has_boosters)
         advisory = generate_advisory(state, phase, nominal_at_alt,
                                      prev_apo_km=self._prev_apo_km)
 
         # Update prev_apo for next cycle
         self._prev_apo_km = (state.get("apoapsis") or 0) / 1000.0
 
-        return {
+        # Consumables trending (UX P3-11 / FC-01)
+        lf = state.get("liquid_fuel") or 0
+        current_met = state.get("mission_time") or 0
+        if self._prev_lf is not None and self._prev_met is not None:
+            dt = current_met - self._prev_met
+            if dt < 0:
+                self.reset()
+            elif dt > 0:
+                raw_rate = (self._prev_lf - lf) / dt
+                alpha = 0.3
+                self._burn_rate = alpha * max(0.0, raw_rate) + (1 - alpha) * self._burn_rate
+        self._prev_lf = lf
+        self._prev_met = current_met
+
+        ttd = None
+        if self._burn_rate > 0.01 and lf > 0:
+            ttd = lf / self._burn_rate
+
+        consumables = {
+            "burn_rate": round(self._burn_rate, 3),
+            "time_to_depletion": round(ttd, 1) if ttd is not None else None,
+            "liquid_fuel_pct": round((lf / FULL_LF) * 100, 1),
+        }
+
+        # Flight efficiency scoring (UX P3-14) — computed once on first ORBIT tick
+        if phase == FlightPhase.ORBIT and self._flight_score is None:
+            apo_km = (state.get("apoapsis") or 0) / 1000.0
+            pe_km = (state.get("periapsis") or 0) / 1000.0
+            apo_err = abs(apo_km - TARGET_ORBIT_ALT)
+            pe_err = abs(pe_km - TARGET_ORBIT_ALT)
+            orbital_accuracy = max(0, 100 - (apo_err + pe_err) * 2)
+            fuel_efficiency = min(100, (lf / FULL_LF) * 100)
+            overall = round(orbital_accuracy * 0.6 + fuel_efficiency * 0.4)
+            self._flight_score = {
+                "overall": max(0, min(100, overall)),
+                "orbital_accuracy": round(max(0, min(100, orbital_accuracy))),
+                "fuel_efficiency": round(max(0, min(100, fuel_efficiency))),
+            }
+
+        result = {
             "phase": phase.value,
             "advisory": {
                 "level":  advisory.level,
@@ -511,4 +579,8 @@ class FlightDirector:
             ],
             "nominal_at_time": nominal_at_t,
             "nominal_at_alt":  nominal_at_alt,
+            "consumables": consumables,
         }
+        if self._flight_score is not None:
+            result["flight_score"] = self._flight_score
+        return result

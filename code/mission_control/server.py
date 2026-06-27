@@ -81,6 +81,7 @@ class MissionSession:
         self.nominal_traj: Optional[NominalTrajectory] = None
         self.current_scenario: Optional[LaunchScenario] = None
         self.emit_rate_hz: int = 5
+        self._mission_name: Optional[str] = None
 
 session = MissionSession()
 
@@ -156,6 +157,14 @@ def api_constants():
         "ATM_CEIL_KM": ATM_CEIL / 1000.0,
         "DEFAULT_CDA": default_cfg.effective_cda,
         "COAST_MASS_KG": default_cfg.mass_at_booster_sep * 1000.0,
+    })
+
+
+@app.route("/api/config")
+def api_config():
+    """Serve server-side configuration (mission name, etc.)."""
+    return jsonify({
+        "mission_name": getattr(session, '_mission_name', None),
     })
 
 
@@ -276,6 +285,7 @@ def api_scenario_reset():
     if not isinstance(session.telemetry_client, ScriptedTelemetry):
         return jsonify({"error": "No scripted scenario loaded"}), 400
     session.telemetry_client.reset()
+    session.flight_director.reset()
     return jsonify({"ok": True})
 
 
@@ -342,6 +352,7 @@ def on_playback_control(data):
         session.telemetry_client.resume()
     elif action == "reset":
         session.telemetry_client.reset()
+        session.flight_director.reset()
     elif action == "speed":
         speed = data.get("speed", 1.0)
         if isinstance(speed, (int, float)) and 0.25 <= speed <= 10.0:
@@ -412,6 +423,9 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--scenario", default=None, metavar="NAME",
                    help="Start with a preset scenario (e.g., 'nominal', 'steep_ascent'). "
                         "Implies simulation mode.")
+    p.add_argument("--mission-name", default=None, metavar="NAME",
+                   help="Custom mission name for branding (e.g., 'APOLLO 11'). "
+                        "Overrides 'PERSEUS 1' in the UI.")
     return p
 
 
@@ -419,6 +433,7 @@ def main(argv=None):
     parser = build_argparser()
     args = parser.parse_args(argv)
     session.emit_rate_hz = args.emit_rate
+    session._mission_name = args.mission_name
 
     # Load nominal trajectory
     logger.info("Computing nominal trajectory…")
