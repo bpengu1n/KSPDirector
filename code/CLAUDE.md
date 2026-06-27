@@ -136,7 +136,7 @@ If you change any part mass or engine stat, re-run and update this table.
 | Target orbit | 80 × 80 km | design |
 | Orbital speed @80km | 2,279 m/s | derived |
 | TMI ΔV | ~856 m/s | design |
-| Test suite | **270 pass, 54 skip** | pytest (playwright skip w/o browser) |
+| Test suite | **503 collected (270 pass, 233 require browser)** | pytest |
 
 ---
 
@@ -373,14 +373,47 @@ tests/test_p1_regressions.py       11 tests  — P1 high-priority fixes validate
 tests/test_p2_p3_regressions.py    21 tests  — P2/P3 fixes validated
 tests/test_scenario.py            188 tests  — scenario system + integration
 tests/test_ballistic_projection.py 33 tests  — ballistic projection + drag
-tests/test_ui_playwright.py        54 tests  — DOM-based UI tests (headless Chromium)
+tests/test_ui_playwright.py       230 tests  — DOM-based UI tests (headless Chromium)
+tests/test_isolation.py             3 tests  — meta-test for order independence
 ─────────────────────────────────────────────────────
-Total                             324 collected  (270 pass, 54 skip w/o browser)
+Total                             503 collected  (270 pass, 233 require browser)
 ```
 
 Test framework: **pytest** (migrated from unittest). Uses shared fixtures in
 `conftest.py`, `pytest.mark.parametrize` for data-driven tests, and
 `pytest.approx()` for float comparisons. No `unittest.TestCase` subclasses.
+
+### Test isolation
+
+All Playwright UI tests are fully atomic — each starts from an identical clean
+baseline via an autouse `reset_ui` fixture that resets all mutable JS globals
+(`latestState`, `latestDirector`, `actualTraj`, `_globeZoomMul`, etc.), DOM
+element content, and UI panel state before every test. Tests can run in any
+order — natural, reversed, or random — and produce identical results.
+
+The `test_isolation.py` meta-test enforces this by running the full Playwright
+suite in three orderings (natural, reversed via `pytest-reverse`, random via
+`pytest-randomly`) and asserting 0 failures in each.
+
+```bash
+# Run all tests (browser required for Playwright tests)
+python -m pytest tests/ -v
+
+# Run only non-browser tests (matches CI)
+python -m pytest tests/ -v --ignore=tests/test_ui_playwright.py --ignore=tests/test_isolation.py
+
+# Run isolation verification
+python -m pytest tests/test_isolation.py -v
+
+# With coverage
+python -m pytest tests/ --cov=sim --cov=mission_control --cov-report=term-missing
+```
+
+### CI
+
+GitHub Actions runs the non-browser test suite on every push/PR to `main`
+(Python 3.12/3.13/3.14). Playwright and isolation tests are excluded because
+CI runners don't have Chromium pre-installed. See `.github/workflows/tests.yml`.
 
 **Before making any change**: run `python -m pytest tests/ -v` and confirm green.
 **When adding a feature or fixing a bug**: write the test first (red), then fix (green).
@@ -415,7 +448,8 @@ LaunchScenario (scenario.py) → VehicleConfig + pitch program
 - `mission_control/server.py` — `/api/scenario/*` routes + `MissionSession`
 - `mission_control/static/index.html` — scenario control panel + `/api/constants`
 - `tests/test_scenario.py` — 176 tests covering model, playback, API, integration, UI viewport, layout, graphical elements, timeline bands, phase detection, fuel model, Telemachus topics, stages
-- `tests/test_ui_playwright.py` — 27 DOM-based tests via headless Chromium (grid layout, computed styles, JS functions, XSS escaping)
+- `tests/test_ui_playwright.py` — 230 DOM-based tests via headless Chromium (grid layout, computed styles, JS functions, telemetry/director panel updates, stage dV bars, scenario panel, XSS escaping, globe zoom, ballistic projection, Houston UI integration)
+- `tests/test_isolation.py` — 3 meta-tests verifying UI test order independence
 
 ### Usage
 
@@ -466,9 +500,12 @@ The module-level `__getattr__` provides backward-compatible reads.
 ### Test suite
 
 ```bash
-# Full suite: 324 collected (270 pass, 54 playwright skip without browser)
+# Full suite: 503 collected (270 pass, 233 require browser)
 cd /home/user/KSPDirector/code
 python -m pytest tests/ -v
+
+# Non-browser tests only (matches CI)
+python -m pytest tests/ -v --ignore=tests/test_ui_playwright.py --ignore=tests/test_isolation.py
 
 # With coverage
 python -m pytest tests/ --cov=sim --cov=mission_control --cov-report=term-missing

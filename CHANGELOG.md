@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Changed
+- **Expanded Playwright UI tests from 54 to 230**: Covers telemetry panel updates, flight director advisory classes, stage dV bar rendering, scenario panel interactions, XSS escaping, globe zoom, ballistic projection, Houston UI integration, CSS custom properties, canvas drawing, and Socket.IO initialization.
+- **Full test isolation via autouse `reset_ui` fixture**: Every Playwright test starts from an identical clean baseline — all mutable JS globals, DOM elements, and UI state reset before each test. Eliminates order-dependent failures.
+- **CI workflow migrated from unittest to pytest**: `tests.yml` now installs `pytest`, `pytest-randomly`, and `pytest-reverse`, and runs `python -m pytest` instead of `python -m unittest`. Playwright and isolation tests excluded (no browser in CI).
+
+### Added
+- `tests/test_isolation.py`: Meta-test that runs all 230 Playwright tests in natural, reversed, and random order via subprocesses, verifying 0 failures in each ordering.
+- `pytest-randomly` and `pytest-reverse` test dependencies for order-independence verification.
+
+### Fixed
+- **Flaky canvas cache tests**: `test_invalidate_on_resize_direct` and `test_invalidate_canvas_sizes` use atomic JS evaluation to prevent animation-frame race conditions between separate `page.evaluate()` calls.
+
 ## [1.2.0] — 2026-06-26
 
 ### Changed

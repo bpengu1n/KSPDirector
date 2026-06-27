@@ -1734,7 +1734,7 @@ def test_threshold_uses_max_floor(html_source):
 # Socket.IO broadcast
 # ---------------------------------------------------------------------------
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def socketio_env():
     """Set up Flask-SocketIO test environment with SimulatedTelemetry running."""
     from mission_control.server import app, socketio, session
@@ -1748,11 +1748,13 @@ def socketio_env():
     client = SimulatedTelemetry(rate_ms=50)
     client.start()
     wait_for(lambda: (client.get_state().get("altitude") or 0) > 0)
+    wait_for(lambda: len(client.get_trajectory()) > 0)
     session.telemetry_client = client
 
     yield app, socketio, session, client
 
     client.stop()
+    session.telemetry_client = None
 
 
 def _sio_connect(app, socketio):
