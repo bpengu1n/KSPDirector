@@ -2094,7 +2094,7 @@ function exportEventLog() {
   a.href = URL.createObjectURL(blob);
   a.download = 'mission_event_log.txt';
   a.click();
-  URL.revokeObjectURL(a.href);
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
 // ---------------------------------------------------------------

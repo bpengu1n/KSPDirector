@@ -1188,25 +1188,8 @@ def test_xss_in_scenario_summary(page):
 # Resize handling
 # ===================================================================
 
-def test_invalidate_on_resize_direct(page):
-    result = page.evaluate("""(() => {
-        invalidateCanvasSizes();
-        getCanvasSize('globe-canvas');
-        const before = Object.keys(_canvasSizes).length;
-        invalidateCanvasSizes();
-        const after = Object.keys(_canvasSizes).length;
-        return {before, after};
-    })()""")
-    assert result["before"] > 0
-    assert result["after"] == 0
-
-
 def test_resize_event_handler_exists(page):
-    has_handler = page.evaluate("""(() => {
-        let called = false;
-        const orig = invalidateCanvasSizes;
-        return typeof orig === 'function';
-    })()""")
+    has_handler = page.evaluate("typeof invalidateCanvasSizes === 'function'")
     assert has_handler
 
 

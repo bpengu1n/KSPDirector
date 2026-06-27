@@ -487,14 +487,7 @@ class FlightDirector:
 
     def __init__(self, nominal: NominalTrajectory):
         self.nominal = nominal
-        self._phase = FlightPhase.PRELAUNCH
-        self._fuel_at_core_sep: Optional[float] = None
-        self._prev_apo_km: Optional[float] = None   # for P2-08 stall detection
-        self._prev_lf: Optional[float] = None
-        self._prev_met: Optional[float] = None
-        self._burn_rate: float = 0.0
-        self._flight_score: Optional[dict] = None
-        self._has_boosters: bool = True
+        self.reset()
 
     def reset(self):
         """Reset all mutable state for scenario replay."""

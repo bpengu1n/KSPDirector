@@ -51,12 +51,16 @@ code/                          (root — was percy_project_fixed/ in outputs)
 │
 ├── tests/
 │   ├── conftest.py                Shared pytest fixtures (project_root, vehicle_config, etc.)
+│   ├── playwright_helpers.py      Shared Playwright test helpers (RESET_JS)
 │   ├── test_p0_regressions.py     17 tests — critical bug regressions
 │   ├── test_p1_regressions.py     11 tests — high-priority issue regressions
 │   ├── test_p2_p3_regressions.py  21 tests — medium/low priority regressions
 │   ├── test_ballistic_projection.py  33 tests — ballistic projection + drag
 │   ├── test_scenario.py           188 tests — scenario system + integration
-│   ├── test_ui_playwright.py      54 tests — DOM-based UI tests (headless Chromium)
+│   ├── test_ux_review.py          53 tests — UX survey review implementations
+│   ├── test_ui_playwright.py     229 tests — DOM-based UI tests (headless Chromium)
+│   ├── test_visual_playwright.py  61 tests — visual regression tests (headless Chromium)
+│   ├── test_isolation.py           3 tests — meta-test for order independence
 │   └── COVERAGE_REPORT.md         Coverage analysis and recommendations
 │
 ├── tools/
@@ -373,10 +377,12 @@ tests/test_p1_regressions.py       11 tests  — P1 high-priority fixes validate
 tests/test_p2_p3_regressions.py    21 tests  — P2/P3 fixes validated
 tests/test_scenario.py            188 tests  — scenario system + integration
 tests/test_ballistic_projection.py 33 tests  — ballistic projection + drag
-tests/test_ui_playwright.py       230 tests  — DOM-based UI tests (headless Chromium)
+tests/test_ux_review.py            53 tests  — UX survey review implementations
+tests/test_ui_playwright.py       229 tests  — DOM-based UI tests (headless Chromium)
+tests/test_visual_playwright.py    61 tests  — visual regression tests (headless Chromium)
 tests/test_isolation.py             3 tests  — meta-test for order independence
 ─────────────────────────────────────────────────────
-Total                             503 collected  (270 pass, 233 require browser)
+Total                             616 collected  (323 pass, 293 require browser)
 ```
 
 Test framework: **pytest** (migrated from unittest). Uses shared fixtures in
@@ -412,8 +418,9 @@ python -m pytest tests/ --cov=sim --cov=mission_control --cov-report=term-missin
 ### CI
 
 GitHub Actions runs the non-browser test suite on every push/PR to `main`
-(Python 3.12/3.13/3.14). Playwright and isolation tests are excluded because
-CI runners don't have Chromium pre-installed. See `.github/workflows/tests.yml`.
+(Python 3.12/3.13/3.14). Playwright tests (`test_ui_playwright.py`,
+`test_visual_playwright.py`) and isolation tests are excluded because CI
+runners don't have Chromium pre-installed. See `.github/workflows/tests.yml`.
 
 **Before making any change**: run `python -m pytest tests/ -v` and confirm green.
 **When adding a feature or fixing a bug**: write the test first (red), then fix (green).

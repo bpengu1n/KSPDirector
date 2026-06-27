@@ -28,4 +28,4 @@ jobs:
 
       - name: Run test suite
         working-directory: code
-        run: python -m pytest tests/ -v --ignore=tests/test_ui_playwright.py --ignore=tests/test_isolation.py
+        run: python -m pytest tests/ -v --ignore=tests/test_ui_playwright.py --ignore=tests/test_visual_playwright.py --ignore=tests/test_isolation.py
