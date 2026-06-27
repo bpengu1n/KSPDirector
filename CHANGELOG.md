@@ -14,19 +14,27 @@
 - **Custom mission branding** (UX-P3-13): Persistent mission name setting via localStorage. Editable in the Scenario panel under "Mission Settings". Priority chain: URL param `?mission=NAME` (one-time override, auto-saves) → localStorage → server `--mission-name` CLI arg via `/api/config` → default "PERSEUS 1". Reflected in `window.MissionControl.mission`.
 - **Server `/api/config` endpoint**: Serves server-side configuration (mission name).
 - **44 new tests** (`test_ux_review.py`): Backend logic tests for booster SEP gate (7), advisory pitch reference (3), consumables trending (4), flight scoring (3), alert escalation (3); source-level verification for overlay mode (4), checklist (5), branding (8), event log (6), server config (1).
-- `tests/test_isolation.py`: Meta-test that runs all 230 Playwright tests in natural, reversed, and random order via subprocesses, verifying 0 failures in each ordering.
+- **61 visual regression tests** (`test_visual_playwright.py`): Panel layout, CSS theming, advisory colors, mission branding, prelaunch overlay, canvas placement, telemetry layout, gate indicator colors, flight score overlay, scenario panel, and event log visual checks.
+- `tests/test_isolation.py`: Meta-test that runs all 229 Playwright tests in natural, reversed, and random order via subprocesses, verifying 0 failures in each ordering.
 - `pytest-randomly` and `pytest-reverse` test dependencies for order-independence verification.
 
 ### Added (documentation)
 - **UX_REVIEW.md**: Comprehensive team assessment of all 15 UX survey recommendations. 9 items implemented, 7 deferred with rationale, 1 declined. Includes implementation priority order, stability risk assessment, and domain fidelity evaluation.
 
 ### Changed
-- **Expanded Playwright UI tests from 54 to 230**: Covers telemetry panel updates, flight director advisory classes, stage dV bar rendering, scenario panel interactions, XSS escaping, globe zoom, ballistic projection, Houston UI integration, CSS custom properties, canvas drawing, and Socket.IO initialization.
+- **Expanded Playwright UI tests from 54 to 229**: Covers telemetry panel updates, flight director advisory classes, stage dV bar rendering, scenario panel interactions, XSS escaping, globe zoom, ballistic projection, Houston UI integration, CSS custom properties, canvas drawing, and Socket.IO initialization.
 - **Full test isolation via autouse `reset_ui` fixture**: Every Playwright test starts from an identical clean baseline — all mutable JS globals, DOM elements, and UI state reset before each test. Eliminates order-dependent failures.
 - **CI workflow migrated from unittest to pytest**: `tests.yml` now installs `pytest`, `pytest-randomly`, and `pytest-reverse`, and runs `python -m pytest` instead of `python -m unittest`. Playwright and isolation tests excluded (no browser in CI).
 
 ### Fixed
-- **Flaky canvas cache tests**: `test_invalidate_on_resize_direct` and `test_invalidate_canvas_sizes` use atomic JS evaluation to prevent animation-frame race conditions between separate `page.evaluate()` calls.
+- **CI workflow missing Playwright exclusion**: Added `--ignore=tests/test_visual_playwright.py` to CI workflow so headless-Chromium tests don't run on runners without a browser.
+- **Blob download race**: `exportEventLog()` now defers `URL.revokeObjectURL` via `setTimeout` so the browser can initiate the download before the blob URL is revoked.
+- **Duplicate Playwright test removed**: `test_invalidate_on_resize_direct` was identical to `test_invalidate_canvas_sizes`; removed the duplicate and cleaned dead variable in `test_resize_event_handler_exists`.
+- **FlightDirector reset/init duplication**: `__init__` now calls `reset()` instead of duplicating all 7 field assignments, eliminating drift risk.
+- **GainNode leak in `_playTone()`**: Oscillator `onended` callback now disconnects the GainNode to prevent accumulating orphaned audio nodes.
+- **ABORT/WARNING setTimeout tracking**: All `setTimeout` IDs for alert tones are now tracked in `_abortAlarmTimeouts` and cleared by `_clearAbortAlarm()` helper, preventing orphaned timeouts across advisory transitions.
+- **RESET_JS shared module**: Playwright test reset snippet extracted from both test files into `tests/playwright_helpers.py` to eliminate duplication and drift.
+- **`test_visual_playwright.py` missing reset fixture**: Added autouse `reset_ui` fixture to prevent order-dependent failures in visual regression tests.
 
 ## [1.2.0] — 2026-06-26
 
