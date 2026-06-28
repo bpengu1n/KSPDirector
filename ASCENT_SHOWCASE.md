@@ -130,6 +130,9 @@ that Terrier fuel may be insufficient to reach orbit.
 
 The scenario panel (accessed via the **SCENARIO** button in the top bar)
 allows loading different vehicle configurations and pitch programs for
-what-if analysis. Preset scenarios include nominal, steep/shallow/late
-pitch programs, heavy payload, Thumper booster variants, high-TWR configs,
-and abort training scenarios with telemetry noise.
+what-if analysis. Custom parameters include booster type (Hammer/Thumper),
+count, thrust percentage, extra payload mass, pitch program, and telemetry
+noise. Playback controls (PLAY / PAUSE / RESET) with variable speed
+(0.5×–10×) let you scrub through simulated ascents. Preset scenarios
+include nominal, steep/shallow/late pitch programs, heavy payload,
+Thumper booster variants, high-TWR configs, and abort training scenarios.
