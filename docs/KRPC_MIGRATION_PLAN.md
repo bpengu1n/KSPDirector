@@ -301,62 +301,594 @@ class FlightDirectorConfig:
 ## Phase 5: kRPC Upstream Contribution (Per-Stage ΔV)
 
 **Goal:** Contribute a per-stage ΔV API to kRPC, closing the gap that
-requires our manual Tsiolkovsky computation.
+requires our manual Tsiolkovsky computation (Phase 2.2).
 
-### Feasibility Assessment
+### Background
 
-**Repository:** `github.com/krpc/krpc` — LGPLv3, accepts PRs.
+- **GitHub issue #336** (open since 2016): requests per-stage ΔV. Linked
+  to issue #311 which asked for server-side stage predictions to avoid
+  expensive client-side fuel-feeding logic. No implementation has been
+  attempted by any contributor.
+- **KSP 1.12** added a built-in `DeltaVStageInfo` class that the stock
+  staging UI reads. This is the data source we'd wrap.
+- **kRPC license:** LGPLv3 — accepts contributions under the same license.
+- **Maintainer:** djungelorm. Active but part-time. Last release v0.5.4
+  shipped June 2024.
 
-**What exists:** GitHub issue #336 requests this feature. It has been open
-for several years, indicating interest but no implementation.
+### kRPC Architecture (Relevant to This Contribution)
 
-**What KSP exposes internally:** Since KSP 1.12, the game has a built-in
-`DeltaVStageInfo` class that computes per-stage ΔV, TWR, ISP, burn time,
-and mass breakdown. This is what the stock staging UI reads.
+```
+krpc/
+├── core/src/Service/Attributes/     # Annotation definitions
+│   ├── KRPCClassAttribute.cs        #   [KRPCClass(Service = "SpaceCenter")]
+│   ├── KRPCPropertyAttribute.cs     #   [KRPCProperty]
+│   ├── KRPCMethodAttribute.cs       #   [KRPCMethod]
+│   └── KRPCEnumAttribute.cs         #   [KRPCEnum]
+│
+├── service/SpaceCenter/src/Services/
+│   ├── Vessel.cs                    # Main vessel class — we add Stages property here
+│   ├── Flight.cs                    # Flight telemetry (reference for patterns)
+│   ├── Orbit.cs                     # Orbital mechanics (reference)
+│   ├── Resources.cs                 # Per-stage resource access (existing precedent)
+│   ├── Parts/
+│   │   ├── Engine.cs                # Engine wrapper — PRIMARY REFERENCE IMPL (628 lines)
+│   │   ├── Part.cs                  # Individual part wrapper
+│   │   └── Parts.cs                 # Part collection with InDecoupleStage()
+│   └── BUILD.bazel
+│
+├── service/SpaceCenter/test/        # Python integration tests (unittest)
+│   └── test_parts_engine.py         # Engine test pattern to follow
+│
+├── tools/ServiceDefinitions/        # Extracts annotations → JSON service defs
+├── client/python/                   # Auto-generated Python stubs
+└── protobuf/                        # Protocol buffer schemas (generic)
+```
 
-**Implementation approach for a kRPC PR:**
+**Key insight:** kRPC already has `Vessel.ResourcesInDecoupleStage(stage, cumulative)`
+and `Parts.InDecoupleStage(stage)` — the infrastructure for per-stage queries
+exists. We're adding a wrapper around KSP's `DeltaVStageInfo` using the same
+pattern as `Engine.cs` wrapping `ModuleEngines`.
 
-The kRPC service definition lives in `service/SpaceCenter/src/Services/`.
-Adding per-stage ΔV would involve:
+### Build System
 
-1. Create a new `StageDeltaV` class wrapping KSP's `DeltaVStageInfo`:
-   ```csharp
-   [KRPCClass(Service = "SpaceCenter")]
-   public class StageDeltaV {
-       [KRPCProperty] public double DVVacuum { get; }
-       [KRPCProperty] public double DVASL { get; }
-       [KRPCProperty] public double DVActual { get; }
-       [KRPCProperty] public double TWRVacuum { get; }
-       [KRPCProperty] public double TWRASL { get; }
-       [KRPCProperty] public double ISPVacuum { get; }
-       [KRPCProperty] public double ISPASL { get; }
-       [KRPCProperty] public double BurnTime { get; }
-       [KRPCProperty] public double StartMass { get; }
-       [KRPCProperty] public double EndMass { get; }
-       [KRPCProperty] public double FuelMass { get; }
-   }
+kRPC uses **Bazel**. Required tooling:
+
+```bash
+# Prerequisites
+# - Bazelisk (manages Bazel versions)
+# - Mono / .NET SDK (for C# compilation)
+# - Python 3.12+
+# - KSP game DLLs in lib/ksp/ (see kRPC build docs)
+
+# Build SpaceCenter service
+bazel build //service/SpaceCenter
+
+# Run SpaceCenter tests (requires KSP running with kRPC loaded)
+bazel test //service/SpaceCenter:test
+
+# Build everything
+bazel build //:krpc
+
+# Docker alternative (avoids local toolchain setup)
+docker pull ghcr.io/krpc/buildenv:latest
+```
+
+**First-time build pain:** Setting up `lib/ksp/` with the correct KSP
+assemblies and getting Mono symlinked properly is the main friction point.
+The Docker image sidesteps this.
+
+### Implementation Plan
+
+#### Task 5.1: Create `Stage.cs` Wrapper Class
+
+**File:** `service/SpaceCenter/src/Services/Stage.cs` (new, ~180 lines)
+
+**Pattern:** Follow `Engine.cs` — store a vessel ID + stage number, look up
+`DeltaVStageInfo` on each property access.
+
+```csharp
+using System;
+using KRPC.Service.Attributes;
+using KRPC.SpaceCenter.ExtensionMethods;
+using KRPC.Utils;
+
+namespace KRPC.SpaceCenter.Services
+{
+    /// <summary>
+    /// Represents a single stage in a vessel's staging sequence.
+    /// Provides delta-v, mass, thrust, ISP, and burn time predictions
+    /// from KSP's built-in stage calculator.
+    /// </summary>
+    /// <remarks>
+    /// Obtained from <see cref="Vessel.Stages"/> or
+    /// <see cref="Vessel.GetStageInfo"/>.
+    /// </remarks>
+    [KRPCClass(Service = "SpaceCenter", GameScene = GameScene.Flight)]
+    public class Stage : Equatable<Stage>
+    {
+        readonly Guid vesselId;
+        readonly int stageNumber;
+
+        internal Stage(global::Vessel vessel, int stage)
+        {
+            if (ReferenceEquals(vessel, null))
+                throw new ArgumentNullException(nameof(vessel));
+            vesselId = vessel.id;
+            stageNumber = stage;
+        }
+
+        public override bool Equals(Stage other)
+        {
+            return !ReferenceEquals(other, null) &&
+                   vesselId == other.vesselId &&
+                   stageNumber == other.stageNumber;
+        }
+
+        public override int GetHashCode()
+        {
+            return vesselId.GetHashCode() ^ stageNumber.GetHashCode();
+        }
+
+        internal global::Vessel InternalVessel
+        {
+            get { return FlightGlobalsExtensions.GetVesselById(vesselId); }
+        }
+
+        // Helper: get KSP's DeltaVStageInfo for this stage, or null
+        DeltaVStageInfo GetStageInfo()
+        {
+            var vessel = InternalVessel;
+            if (vessel == null || vessel.VesselDeltaV == null)
+                return null;
+            return vessel.VesselDeltaV.GetStage(stageNumber);
+        }
+
+        /// <summary>
+        /// The stage number.
+        /// </summary>
+        [KRPCProperty]
+        public int Number
+        {
+            get { return stageNumber; }
+        }
+
+        /// <summary>
+        /// Delta-v of the stage in vacuum, in meters per second.
+        /// </summary>
+        [KRPCProperty]
+        public double DeltaVVacuum
+        {
+            get
+            {
+                var info = GetStageInfo();
+                return info != null ? info.deltaVinVac : 0.0;
+            }
+        }
+
+        /// <summary>
+        /// Delta-v of the stage at sea level on the current body,
+        /// in meters per second.
+        /// </summary>
+        [KRPCProperty]
+        public double DeltaVASL
+        {
+            get
+            {
+                var info = GetStageInfo();
+                return info != null ? info.deltaVatASL : 0.0;
+            }
+        }
+
+        /// <summary>
+        /// Delta-v of the stage at the current atmospheric conditions,
+        /// in meters per second.
+        /// </summary>
+        [KRPCProperty]
+        public double DeltaVActual
+        {
+            get
+            {
+                var info = GetStageInfo();
+                return info != null ? info.deltaVActual : 0.0;
+            }
+        }
+
+        /// <summary>
+        /// Thrust-to-weight ratio in vacuum.
+        /// </summary>
+        [KRPCProperty]
+        public double TWRVacuum
+        {
+            get
+            {
+                var info = GetStageInfo();
+                return info != null ? info.thrustToWeightVac : 0.0;
+            }
+        }
+
+        /// <summary>
+        /// Thrust-to-weight ratio at sea level on the current body.
+        /// </summary>
+        [KRPCProperty]
+        public double TWRASL
+        {
+            get
+            {
+                var info = GetStageInfo();
+                return info != null ? info.thrustToWeightASL : 0.0;
+            }
+        }
+
+        /// <summary>
+        /// Total thrust in vacuum, in Newtons.
+        /// </summary>
+        [KRPCProperty]
+        public double ThrustVacuum
+        {
+            get
+            {
+                var info = GetStageInfo();
+                return info != null ? (double)info.thrustVac * 1000.0 : 0.0;
+            }
+        }
+
+        /// <summary>
+        /// Total thrust at sea level, in Newtons.
+        /// </summary>
+        [KRPCProperty]
+        public double ThrustASL
+        {
+            get
+            {
+                var info = GetStageInfo();
+                return info != null ? (double)info.thrustASL * 1000.0 : 0.0;
+            }
+        }
+
+        /// <summary>
+        /// Specific impulse in vacuum, in seconds.
+        /// </summary>
+        [KRPCProperty]
+        public double ISPVacuum
+        {
+            get
+            {
+                var info = GetStageInfo();
+                return info != null ? info.ispVac : 0.0;
+            }
+        }
+
+        /// <summary>
+        /// Specific impulse at sea level, in seconds.
+        /// </summary>
+        [KRPCProperty]
+        public double ISPASL
+        {
+            get
+            {
+                var info = GetStageInfo();
+                return info != null ? info.ispASL : 0.0;
+            }
+        }
+
+        /// <summary>
+        /// Estimated burn time for this stage, in seconds.
+        /// </summary>
+        [KRPCProperty]
+        public double BurnTime
+        {
+            get
+            {
+                var info = GetStageInfo();
+                return info != null ? info.stageBurnTime : 0.0;
+            }
+        }
+
+        /// <summary>
+        /// Start mass of the stage (before burn), in kg.
+        /// </summary>
+        [KRPCProperty]
+        public double StartMass
+        {
+            get
+            {
+                var info = GetStageInfo();
+                return info != null ? (double)info.startMass * 1000.0 : 0.0;
+            }
+        }
+
+        /// <summary>
+        /// End mass of the stage (after burn), in kg.
+        /// </summary>
+        [KRPCProperty]
+        public double EndMass
+        {
+            get
+            {
+                var info = GetStageInfo();
+                return info != null ? (double)info.endMass * 1000.0 : 0.0;
+            }
+        }
+
+        /// <summary>
+        /// Fuel mass consumed by this stage, in kg.
+        /// </summary>
+        [KRPCProperty]
+        public double FuelMass
+        {
+            get
+            {
+                var info = GetStageInfo();
+                return info != null ? (double)info.fuelMass * 1000.0 : 0.0;
+            }
+        }
+
+        /// <summary>
+        /// Dry mass of the stage (without fuel), in kg.
+        /// </summary>
+        [KRPCProperty]
+        public double DryMass
+        {
+            get
+            {
+                var info = GetStageInfo();
+                return info != null ? (double)info.dryMass * 1000.0 : 0.0;
+            }
+        }
+    }
+}
+```
+
+**LOE:** 4–6 hours (including unit verification against KSP's readout)
+
+**Key uncertainty:** The exact property names on `DeltaVStageInfo` need
+verification against the KSP 1.12.5 assembly. The names above
+(`deltaVinVac`, `deltaVatASL`, `thrustVac`, `ispVac`, `stageBurnTime`,
+`startMass`, `endMass`, `fuelMass`, `dryMass`, `thrustToWeightVac`,
+`thrustToWeightASL`, `deltaVActual`) are based on community documentation
+and decompilation. Use dnSpy or ILSpy on `Assembly-CSharp.dll` from KSP
+1.12.5 to confirm exact names before coding.
+
+#### Task 5.2: Add `Vessel.Stages` Property and `Vessel.GetStageInfo()` Method
+
+**File:** `service/SpaceCenter/src/Services/Vessel.cs` (modify)
+
+```csharp
+/// <summary>
+/// A list of all stages for this vessel, ordered by stage number.
+/// Each stage contains delta-v, mass, thrust, and burn time predictions
+/// from KSP's built-in stage calculator.
+/// </summary>
+[KRPCProperty(GameScene = GameScene.Flight)]
+public IList<Stage> Stages
+{
+    get
+    {
+        var vessel = InternalVessel;
+        var stages = new List<Stage>();
+        var dvInfo = vessel.VesselDeltaV;
+        if (dvInfo == null)
+            return stages;
+        int count = dvInfo.OperatingStageInfo.Count;
+        for (int i = 0; i < count; i++)
+            stages.Add(new Stage(vessel, i));
+        return stages;
+    }
+}
+
+/// <summary>
+/// Get stage information for a specific stage number.
+/// </summary>
+/// <param name="stage">The stage number.</param>
+[KRPCMethod(GameScene = GameScene.Flight)]
+public Stage GetStageInfo(int stage)
+{
+    return new Stage(InternalVessel, stage);
+}
+```
+
+**LOE:** 1–2 hours
+
+#### Task 5.3: Write Integration Tests
+
+**File:** `service/SpaceCenter/test/test_stage.py` (new)
+
+kRPC tests are Python `unittest.TestCase` subclasses that connect to a
+running KSP instance with kRPC loaded and a known craft on the pad.
+
+```python
+import unittest
+import krpctest
+
+class TestStage(krpctest.TestCase):
+    """Integration tests for per-stage delta-v information."""
+
+    @classmethod
+    def setUpClass(cls):
+        super(TestStage, cls).setUpClass()
+        cls.vessel = cls.conn.space_center.active_vessel
+
+    def test_stages_list_not_empty(self):
+        stages = self.vessel.stages
+        self.assertGreater(len(stages), 0)
+
+    def test_stage_number_sequential(self):
+        stages = self.vessel.stages
+        for i, stage in enumerate(stages):
+            self.assertEqual(stage.number, i)
+
+    def test_delta_v_vacuum_positive(self):
+        for stage in self.vessel.stages:
+            self.assertGreaterEqual(stage.delta_v_vacuum, 0)
+
+    def test_delta_v_asl_le_vacuum(self):
+        for stage in self.vessel.stages:
+            self.assertLessEqual(stage.delta_v_asl, stage.delta_v_vacuum + 0.1)
+
+    def test_mass_consistency(self):
+        for stage in self.vessel.stages:
+            if stage.fuel_mass > 0:
+                self.assertGreater(stage.start_mass, stage.end_mass)
+                self.assertAlmostEqual(
+                    stage.fuel_mass,
+                    stage.start_mass - stage.end_mass,
+                    delta=0.1
+                )
+
+    def test_dry_mass_le_start_mass(self):
+        for stage in self.vessel.stages:
+            self.assertLessEqual(stage.dry_mass, stage.start_mass + 0.1)
+
+    def test_burn_time_positive_when_fuel(self):
+        for stage in self.vessel.stages:
+            if stage.fuel_mass > 0 and stage.thrust_vacuum > 0:
+                self.assertGreater(stage.burn_time, 0)
+
+    def test_isp_positive_when_engines(self):
+        for stage in self.vessel.stages:
+            if stage.thrust_vacuum > 0:
+                self.assertGreater(stage.isp_vacuum, 0)
+                self.assertGreater(stage.isp_asl, 0)
+
+    def test_twr_positive_when_engines(self):
+        for stage in self.vessel.stages:
+            if stage.thrust_vacuum > 0:
+                self.assertGreater(stage.twr_vacuum, 0)
+
+    def test_get_stage_info(self):
+        stages = self.vessel.stages
+        if len(stages) > 0:
+            stage = self.vessel.get_stage_info(0)
+            self.assertEqual(stage.number, 0)
+            self.assertEqual(stage.delta_v_vacuum, stages[0].delta_v_vacuum)
+
+    def test_get_stage_info_invalid(self):
+        stage = self.vessel.get_stage_info(999)
+        self.assertEqual(stage.delta_v_vacuum, 0)
+
+if __name__ == '__main__':
+    unittest.main()
+```
+
+**LOE:** 3–4 hours (including crafting a known test vessel in KSP)
+
+#### Task 5.4: Update Changelog and Documentation
+
+**File:** `service/SpaceCenter/CHANGES.txt` (modify)
+
+```
+v0.x.x
+ * Add per-stage delta-v, mass, thrust, ISP, and burn time via new Stage class (#336)
+ * Add Vessel.Stages property returning all stage information
+ * Add Vessel.GetStageInfo(stage) method for individual stage lookup
+```
+
+**LOE:** 30 minutes
+
+#### Task 5.5: Verify Client Auto-Generation
+
+kRPC's build pipeline automatically generates client bindings from the
+`[KRPCClass]`/`[KRPCProperty]` annotations:
+
+1. `ServiceDefinitions` tool extracts annotations → JSON schema
+2. `clientgen` tool generates Python/C++/Java/C# stubs
+3. `docgen` tool generates API documentation pages
+
+**No manual client code is needed.** After building, the Python client
+will automatically expose:
+
+```python
+vessel = conn.space_center.active_vessel
+for stage in vessel.stages:
+    print(f"Stage {stage.number}: {stage.delta_v_vacuum:.0f} m/s ΔV, "
+          f"{stage.start_mass:.0f}→{stage.end_mass:.0f} kg, "
+          f"burn {stage.burn_time:.1f}s, "
+          f"ISP {stage.isp_vacuum:.0f}s, TWR {stage.twr_vacuum:.2f}")
+```
+
+**LOE:** 1 hour (build, verify generated stubs, test manually)
+
+### Task Summary
+
+| # | Task | LOE | Dependency |
+|---|------|-----|------------|
+| 5.0 | Environment setup (Bazel, Mono, KSP DLLs, dnSpy verification) | 3–6 hr | None |
+| 5.1 | Create `Stage.cs` wrapper class | 4–6 hr | 5.0 |
+| 5.2 | Add `Vessel.Stages` + `Vessel.GetStageInfo()` | 1–2 hr | 5.1 |
+| 5.3 | Write integration tests (`test_stage.py`) | 3–4 hr | 5.1 |
+| 5.4 | Update CHANGES.txt | 30 min | 5.1 |
+| 5.5 | Verify client auto-generation + manual smoke test | 1 hr | 5.2 |
+| 5.6 | Open PR, write description, respond to review | 2–4 hr | 5.3 |
+| | **Total** | **15–23 hr (2–3 dev-days)** | |
+
+*Add 1–2 days for first-time build environment setup if not using Docker.*
+
+### Contribution Workflow
+
+1. **Comment on issue #336** before coding: propose the approach, reference
+   `DeltaVStageInfo`, link to #311. Gauge maintainer interest and get
+   design feedback before investing implementation time.
+2. **Fork `krpc/krpc`**, create branch `yourname/per-stage-delta-v`.
+3. **Verify KSP's `DeltaVStageInfo` API** with dnSpy/ILSpy on
+   `KSP_Data/Managed/Assembly-CSharp.dll`. Confirm exact property names
+   and types. Document findings in the PR description.
+4. **Implement `Stage.cs`** following `Engine.cs` patterns (Equatable,
+   null-safe, XML doc comments, GameScene = Flight).
+5. **Add `Vessel.Stages` + `GetStageInfo()`** to `Vessel.cs`.
+6. **Build:** `bazel build //service/SpaceCenter`.
+7. **Create a test craft** in KSP with known staging (e.g., 3-stage rocket
+   with documented ΔV). Save as a `.craft` file for the test suite.
+8. **Run tests:** `bazel test //service/SpaceCenter:test`.
+9. **Update `CHANGES.txt`**.
+10. **Open PR** against `master`, referencing #336 and #311. Include:
+    - Description of what `DeltaVStageInfo` exposes and how we wrap it
+    - The dnSpy verification of property names
+    - Test results
+    - Python usage example
+
+### Risks Specific to This Contribution
+
+| Risk | Likelihood | Impact | Mitigation |
+|------|-----------|--------|------------|
+| `DeltaVStageInfo` property names wrong | Medium | Low | dnSpy verification before coding. If names are wrong, compile error — fast feedback. |
+| `VesselDeltaV` is null in some flight states | Medium | Low | Null-check in `GetStageInfo()` helper; return 0.0 for all properties. Test with vessel on pad, in flight, and on suborbital trajectory. |
+| Maintainer unresponsive or rejects approach | Medium | High | Comment on #336 first. If no response in 2 weeks, implement anyway — our manual computation (Phase 2.2) is the fallback. PR stays open for whenever they review. |
+| Bazel build environment setup takes >1 day | Medium | Low | Use the Docker build image. Or build locally with `lib/ksp/` pointing to a real KSP install. |
+| Stage numbering convention differs from Telemachus | Low | Medium | KSP uses `inverseStage` internally. kRPC's existing `Parts.InDecoupleStage()` already handles this convention — follow their pattern. |
+| PR review requests significant redesign | Low | Medium | The design follows established kRPC patterns exactly (Engine.cs, Resources.cs). A redesign request would be unusual but we'd adapt. |
+
+### Integration with Our Codebase (Post-Merge)
+
+Once the PR is merged and released, our Phase 2.2 manual Tsiolkovsky
+computation becomes optional. The integration path:
+
+1. Update `krpc` package: `pip install --upgrade krpc`
+2. In `KRPCClient`, replace manual ΔV computation with:
+   ```python
+   stages = []
+   for stage in self._vessel.stages:
+       stages.append({
+           "index": stage.number,
+           "dv_vac": stage.delta_v_vacuum,
+           "dv_asl": stage.delta_v_asl,
+           "dv_actual": stage.delta_v_actual,
+           "twr_vac": stage.twr_vacuum,
+           "twr_asl": stage.twr_asl,
+           "isp_vac": stage.isp_vacuum,
+           "isp_asl": stage.isp_asl,
+           "thrust_vac": stage.thrust_vacuum,
+           "thrust_asl": stage.thrust_asl,
+           "burn_time": stage.burn_time,
+           "mass": stage.start_mass,
+           "dry_mass": stage.dry_mass,
+           "fuel_mass": stage.fuel_mass,
+       })
+   state["stages"] = stages
    ```
+3. Delete the manual `compute_stage_dv()` function from `vehicle_detect.py`.
+4. Update tests to use the native API.
 
-2. Add a `Vessel.DeltaVPerStage` property returning `IList<StageDeltaV>`.
-
-3. Write tests in kRPC's existing test harness.
-
-**Effort estimate:** 2–4 days for a contributor familiar with kRPC internals;
-4–8 days for a first-time contributor (learning build system, test framework,
-C# conventions, review cycles).
-
-**Risk factors:**
-- kRPC's build system is complex (Bazel-based, cross-platform, multi-language
-  client generation). First build can take significant setup time.
-- PR review turnaround is unpredictable — maintainer is active but part-time.
-  Could be days or months. v0.5.4 shipped June 2024, so 12+ months between
-  the last release and now.
-- KSP's `DeltaVStageInfo` has edge cases with asparagus staging and fuel
-  crossfeed that may complicate the wrapper.
-
-**Recommendation:** Submit the PR but don't block on it. Our manual computation
-(Phase 2.2) is the fallback and will be needed regardless during the review
-period. If merged, we remove our manual computation and use the native API.
+**LOE for integration:** 2–3 hours (after kRPC release with Stage class).
 
 ---
 
@@ -381,10 +913,17 @@ Phase 1: kRPC Client                    [1.5–2 days]  ← start here
 Phase 2: Vehicle Auto-Detection         [2–3 days]
 Phase 3: Parameterize FlightDirector    [1.5–2 days]  ← can overlap with Phase 2
 Phase 4: UI Updates                     [1–1.5 days]  ← after Phase 3
-Phase 5: kRPC Upstream PR               [2–4 days]    ← independent, can run in parallel
+Phase 5: kRPC Upstream PR               [2–3 days]    ← independent, parallel
+  5.0  Environment setup (Bazel/Mono/KSP DLLs)  [3–6 hr]  (+1–2 days if first time)
+  5.1  Stage.cs wrapper class                    [4–6 hr]
+  5.2  Vessel.Stages + GetStageInfo()            [1–2 hr]
+  5.3  Integration tests (test_stage.py)         [3–4 hr]
+  5.4  CHANGES.txt update                        [30 min]
+  5.5  Client auto-gen verification              [1 hr]
+  5.6  PR submission + review responses          [2–4 hr]
 
-Total sequential: ~6–9 developer-days
-With parallelism (Phases 2/3 overlap, Phase 5 in parallel): ~5–7 developer-days
+Total sequential: ~7–11 developer-days
+With parallelism (Phases 2/3 overlap, Phase 5 in parallel): ~5–8 developer-days
 ```
 
 ### Milestones
@@ -394,7 +933,9 @@ With parallelism (Phases 2/3 overlap, Phase 5 in parallel): ~5–7 developer-day
 | M1: kRPC telemetry works | `KRPCClient.get_state()` returns valid data, FlightDirector processes it, web UI displays it. All existing tests pass. | End of Phase 1 |
 | M2: Arbitrary vehicle support | Perseus 1 auto-detected correctly. Non-Perseus vehicle (e.g., stock Kerbal X) produces reasonable FlightDirector output. | End of Phase 3 |
 | M3: UI generalized | No Perseus 1-specific text visible when flying a non-Perseus vehicle. Stage labels, fuel bars, and gate thresholds reflect detected vehicle. | End of Phase 4 |
-| M4: kRPC PR submitted | PR opened against `krpc/krpc` with per-stage ΔV wrapper, tests, docs. | End of Phase 5 |
+| M4: kRPC issue commented | Design proposal posted on issue #336 with DeltaVStageInfo approach. Maintainer feedback requested before full implementation. | Phase 5 start |
+| M5: kRPC PR submitted | PR opened against `krpc/krpc` with Stage.cs, Vessel.Stages, tests, CHANGES.txt. | End of Phase 5 |
+| M6: kRPC PR merged + integrated | Native stage API available in released kRPC; manual Tsiolkovsky code removed from our codebase. | Post-Phase 5 (depends on maintainer) |
 
 ---
 
