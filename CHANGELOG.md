@@ -23,7 +23,7 @@
 
 ### Changed
 - **Expanded Playwright UI tests from 54 to 229**: Covers telemetry panel updates, flight director advisory classes, stage dV bar rendering, scenario panel interactions, XSS escaping, globe zoom, ballistic projection, Houston UI integration, CSS custom properties, canvas drawing, and Socket.IO initialization.
-- **Full test isolation via autouse `reset_ui` fixture**: Every Playwright test starts from an identical clean baseline — all mutable JS globals, DOM elements, and UI state reset before each test. Eliminates order-dependent failures.
+- **Full test isolation across all test suites**: Every test starts from a clean baseline regardless of execution order. UI tests use an autouse `reset_ui` fixture; non-UI tests use function-scoped `flask_test_client` and `socketio_env` fixtures with proper setup/teardown. Eliminates order-dependent failures with `pytest-randomly`.
 - **CI workflow migrated from unittest to pytest**: `tests.yml` now installs `pytest`, `pytest-randomly`, and `pytest-reverse`, and runs `python -m pytest` instead of `python -m unittest`. Playwright and isolation tests excluded (no browser in CI).
 
 ### Fixed
@@ -35,6 +35,7 @@
 - **ABORT/WARNING setTimeout tracking**: All `setTimeout` IDs for alert tones are now tracked in `_abortAlarmTimeouts` and cleared by `_clearAbortAlarm()` helper, preventing orphaned timeouts across advisory transitions.
 - **RESET_JS shared module**: Playwright test reset snippet extracted from both test files into `tests/playwright_helpers.py` to eliminate duplication and drift.
 - **`test_visual_playwright.py` missing reset fixture**: Added autouse `reset_ui` fixture to prevent order-dependent failures in visual regression tests.
+- **Non-UI test isolation**: `flask_test_client` and `socketio_env` fixtures converted from module-scoped to function-scoped with server session reset and telemetry client teardown. Removed redundant inline cleanup from individual tests.
 
 ## [1.2.0] — 2026-06-26
 

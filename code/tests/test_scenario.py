@@ -43,10 +43,10 @@ def ascent_result():
     return run_ascent()
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def flask_test_client():
-    """Flask test client with server session, shared across API test groups."""
-    from mission_control.server import app, socketio, session
+    """Flask test client with clean server session per test."""
+    from mission_control.server import app, socketio
     from mission_control.nominal_compare import NominalTrajectory, FlightDirector
     import mission_control.server as srv
 
@@ -54,10 +54,16 @@ def flask_test_client():
     srv.session.nominal_traj = nominal
     srv.session.flight_director = FlightDirector(nominal)
     srv.session.telemetry_client = None
+    srv.session.current_scenario = None
 
     app.config["TESTING"] = True
     client = app.test_client()
     yield client, srv.session, app, socketio
+
+    if srv.session.telemetry_client:
+        srv.session.telemetry_client.stop()
+    srv.session.telemetry_client = None
+    srv.session.current_scenario = None
 
 
 @pytest.fixture(scope="module")
@@ -351,12 +357,10 @@ def test_api_load_preset(flask_test_client):
     data = resp.get_json()
     assert data.get("ok")
     assert "summary" in data
-    if session.telemetry_client:
-        session.telemetry_client.stop()
 
 
 def test_api_load_custom(flask_test_client):
-    client, session, _, _ = flask_test_client
+    client, _, _, _ = flask_test_client
     resp = client.post("/api/scenario/load", json={
         "name": "Custom Test",
         "booster_type": "thumper",
@@ -366,8 +370,6 @@ def test_api_load_custom(flask_test_client):
     })
     assert resp.status_code == 200
     assert resp.get_json().get("ok")
-    if session.telemetry_client:
-        session.telemetry_client.stop()
 
 
 def test_api_load_invalid_rejects(flask_test_client):
@@ -377,35 +379,29 @@ def test_api_load_invalid_rejects(flask_test_client):
 
 
 def test_api_playback_controls(flask_test_client):
-    client, session, _, _ = flask_test_client
+    client, _, _, _ = flask_test_client
     client.post("/api/scenario/load", json={"preset": "nominal"})
     assert client.post("/api/scenario/start").status_code == 200
     assert client.post("/api/scenario/pause").status_code == 200
     assert client.post("/api/scenario/resume").status_code == 200
     assert client.post("/api/scenario/reset").status_code == 200
-    if session.telemetry_client:
-        session.telemetry_client.stop()
 
 
 def test_api_scenario_speed(flask_test_client):
-    client, session, _, _ = flask_test_client
+    client, _, _, _ = flask_test_client
     client.post("/api/scenario/load", json={"preset": "nominal"})
     resp = client.post("/api/scenario/speed", json={"speed": 5.0})
     assert resp.status_code == 200
-    if session.telemetry_client:
-        session.telemetry_client.stop()
 
 
 def test_api_scenario_current(flask_test_client):
-    client, session, _, _ = flask_test_client
+    client, _, _, _ = flask_test_client
     client.post("/api/scenario/load", json={"preset": "nominal"})
     resp = client.get("/api/scenario/current")
     assert resp.status_code == 200
     data = resp.get_json()
     assert "scenario" in data
     assert "playback" in data
-    if session.telemetry_client:
-        session.telemetry_client.stop()
 
 
 # ---------------------------------------------------------------------------
@@ -1574,26 +1570,20 @@ def test_sim_compare_flag():
     "/api/scenario/reset",
 ])
 def test_no_client_returns_400(flask_test_client, endpoint):
-    client, session, _, _ = flask_test_client
-    import mission_control.server as srv
-    srv.session.telemetry_client = None
+    client, _, _, _ = flask_test_client
     assert client.post(endpoint).status_code == 400
 
 
 def test_speed_no_client_400(flask_test_client):
-    client, session, _, _ = flask_test_client
-    import mission_control.server as srv
-    srv.session.telemetry_client = None
+    client, _, _, _ = flask_test_client
     assert client.post("/api/scenario/speed", json={"speed": 2.0}).status_code == 400
 
 
 def test_speed_out_of_range_400(flask_test_client):
-    client, session, _, _ = flask_test_client
+    client, _, _, _ = flask_test_client
     client.post("/api/scenario/load", json={"preset": "nominal"})
     assert client.post("/api/scenario/speed", json={"speed": 100.0}).status_code == 400
     assert client.post("/api/scenario/speed", json={"speed": 0.1}).status_code == 400
-    if session.telemetry_client:
-        session.telemetry_client.stop()
 
 
 def test_load_unknown_preset_400(flask_test_client):
@@ -1636,33 +1626,27 @@ def test_from_dict_non_numeric_validates():
 # ---------------------------------------------------------------------------
 
 def test_preset_noise_override(flask_test_client):
-    client, session, _, _ = flask_test_client
+    client, _, _, _ = flask_test_client
     resp = client.post("/api/scenario/load", json={"preset": "nominal", "noise_pct": 0.10})
     assert resp.status_code == 200
     import mission_control.server as srv
     assert srv.session.current_scenario.noise_pct == pytest.approx(0.10)
-    if session.telemetry_client:
-        session.telemetry_client.stop()
 
 
 def test_preset_speed_override(flask_test_client):
-    client, session, _, _ = flask_test_client
+    client, _, _, _ = flask_test_client
     resp = client.post("/api/scenario/load", json={"preset": "nominal", "playback_speed": 5.0})
     assert resp.status_code == 200
     import mission_control.server as srv
     assert srv.session.current_scenario.playback_speed == pytest.approx(5.0)
-    if session.telemetry_client:
-        session.telemetry_client.stop()
 
 
 def test_preset_invalid_noise_ignored(flask_test_client):
-    client, session, _, _ = flask_test_client
+    client, _, _, _ = flask_test_client
     resp = client.post("/api/scenario/load", json={"preset": "nominal", "noise_pct": 0.50})
     assert resp.status_code == 200
     import mission_control.server as srv
     assert srv.session.current_scenario.noise_pct == pytest.approx(0.02)
-    if session.telemetry_client:
-        session.telemetry_client.stop()
 
 
 # ---------------------------------------------------------------------------
@@ -1751,10 +1735,13 @@ def socketio_env():
     wait_for(lambda: len(client.get_trajectory()) > 0)
     session.telemetry_client = client
 
+    session.current_scenario = None
+
     yield app, socketio, session, client
 
     client.stop()
     session.telemetry_client = None
+    session.current_scenario = None
 
 
 def _sio_connect(app, socketio):
@@ -1859,6 +1846,3 @@ def test_sio_clear_trajectory(socketio_env):
     sio.emit("clear_trajectory")
     assert len(session.telemetry_client.get_trajectory()) == 0
     sio.disconnect()
-    # Let trajectory rebuild
-    if pre_len > 0:
-        wait_for(lambda: len(session.telemetry_client.get_trajectory()) > 0)
