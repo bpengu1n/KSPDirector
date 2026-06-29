@@ -30,6 +30,9 @@ from .constants import G0, MU_KERBIN, R_KERBIN, ATM_CEIL, ENGINES, TANKS
 from . import atmosphere as atm
 from .vehicle import engine_thrust_at  # Fix P3-06: was imported inside integrate()
 
+# Deferred imports for generic integrator (to avoid circular imports at module load)
+# GenericVehicle and PartsDatabase are imported inside integrate_generic().
+
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -78,6 +81,8 @@ class TrajectoryResult:
     # Orbital parameters at core burnout
     apoapsis_km:      float
     periapsis_km:     float
+    # Generic staging events (populated by integrate_generic)
+    staging_events:   list = field(default_factory=list)
     # Config echo
     config_summary:   str = ""
 
@@ -455,4 +460,266 @@ def integrate(
         grav_loss_total=grav_loss,
         apoapsis_km=ap_final,
         periapsis_km=pe_final,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Generic N-stage integrator
+# ---------------------------------------------------------------------------
+
+def engine_thrust_at_generic(h, engine, throttle):
+    """Like engine_thrust_at() but takes an Engine dataclass instead of a key."""
+    pf = atm.pressure_fraction(h)
+    thrust_100pct_kN = engine.thrust_vac_kn - (engine.thrust_vac_kn - engine.thrust_asl_kn) * pf
+    thrust_kN = thrust_100pct_kN * throttle
+    isp = atm.effective_isp(h, engine.isp_vac, engine.isp_asl)
+    mdot = thrust_kN * 1000 / (isp * G0)
+    return thrust_kN, mdot
+
+
+def integrate_generic(
+    vehicle,                                # GenericVehicle
+    db,                                     # PartsDatabase
+    pitch_program: Callable = pitch_nominal,
+    dt: float = 0.02,
+    t_max: float = 600.0,
+    sample_every_n: int = 25,
+    target_orbit_km: float = 80.0,
+) -> TrajectoryResult:
+    """Run an N-stage ascent trajectory simulation.
+
+    Works with any GenericVehicle definition.  Parallel stages fire alongside
+    the first sequential stage; the last stage handles orbit insertion with
+    the same burn-coast-circularize state machine as the Perseus 1 integrator.
+    """
+    cda = vehicle.cd * vehicle.area_base
+    target_apo_m = target_orbit_km * 1000.0
+    target_pe_m = (target_orbit_km - 5.0) * 1000.0
+    n_stages = len(vehicle.stages)
+    last_stage_idx = n_stages - 1
+
+    # Build per-stage runtime state
+    stage_dry_kg = [vehicle.stage_dry_mass(i, db) * 1000 for i in range(n_stages)]
+    stage_engines = [db.get_engine(s.engine_key) for s in vehicle.stages]
+
+    stage_states = []
+    for i in range(n_stages):
+        prop_kg = vehicle.stage_prop_mass(i, db) * 1000
+        stage_states.append({
+            "prop": prop_kg,
+            "active": False,
+            "separated": False,
+        })
+
+    # Activate initial stages: all leading parallel stages + first non-parallel
+    for i, stage in enumerate(vehicle.stages):
+        stage_states[i]["active"] = True
+        if not stage.parallel:
+            break
+
+    # Initial kinematic state
+    t = 0.0
+    h = 0.0
+    dr = 0.0
+    v = 0.1
+    gamma = math.radians(89.999)
+    mass = vehicle.liftoff_mass(db) * 1000  # kg
+
+    # Final-stage orbit insertion state machine
+    # None until the last stage activates, then BURN → COAST_APO → CIRCULARIZE → ORBIT
+    final_mode = "BURN" if stage_states[last_stage_idx]["active"] else None
+
+    free_turn = False
+    step = 0
+    drag_loss = 0.0
+    grav_loss = 0.0
+    prev_v_vert = None
+
+    staging_events: list[SeparationEvent] = []
+    max_q_pt: Optional[TrajectoryPoint] = None
+    max_q_val = 0.0
+    sampled_pts: list[TrajectoryPoint] = []
+
+    def _phase_label():
+        if final_mode is not None:
+            if final_mode == "BURN":
+                return vehicle.stages[last_stage_idx].name.upper()
+            return final_mode
+        for i in reversed(range(n_stages)):
+            if stage_states[i]["active"] and not stage_states[i]["separated"]:
+                return vehicle.stages[i].name.upper()
+        return "COAST"
+
+    def make_point(phase):
+        v_h = v * math.cos(gamma)
+        v_v = v * math.sin(gamma)
+        ap, pe = orbital_params(h, v, gamma)
+        return TrajectoryPoint(
+            t=t, altitude=h, downrange=dr, velocity=v,
+            v_horiz=v_h, v_vert=v_v, gamma=gamma,
+            pitch_from_v=90.0 - math.degrees(gamma),
+            mass=mass / 1000.0,
+            apoapsis=ap, periapsis=pe,
+            phase=phase,
+            drag_loss_cum=drag_loss,
+            grav_loss_cum=grav_loss,
+        )
+
+    while t < t_max:
+        g = gravity(h)
+
+        # --- Engine thrust from all active stages ---
+        T_total_N = 0.0
+        per_stage_mdot: dict[int, float] = {}
+
+        if final_mode not in ("COAST_APO", "ORBIT", "COAST"):
+            for i in range(n_stages):
+                st = stage_states[i]
+                if st["active"] and not st["separated"] and st["prop"] > 0:
+                    eng = stage_engines[i]
+                    throttle = vehicle.stages[i].throttle_pct / 100.0
+                    T_kN, mdot_each = engine_thrust_at_generic(h, eng, throttle)
+                    T_total_N += vehicle.stages[i].engine_count * T_kN * 1000
+                    per_stage_mdot[i] = vehicle.stages[i].engine_count * mdot_each
+
+        D_N = atm.drag_force(h, v, cda)
+
+        # --- Dynamic pressure tracking ---
+        q = 0.5 * atm.density(h) * v * v
+        if q > max_q_val:
+            max_q_val = q
+            max_q_pt = make_point(_phase_label())
+
+        # --- Pitch / gravity turn ---
+        if not free_turn:
+            pg_deg = pitch_program(h)
+            if pg_deg is None:
+                free_turn = True
+        else:
+            pg_deg = None
+
+        if pg_deg is not None:
+            gamma = math.radians(pg_deg)
+            dv = (T_total_N - D_N) / mass - g * math.sin(gamma)
+            dh = v * math.sin(gamma)
+            dgamma = 0.0
+        else:
+            free_turn = True
+            dv = (T_total_N - D_N) / mass - g * math.sin(gamma)
+            dh = v * math.sin(gamma)
+            if final_mode is not None and v > 0.5:
+                r = R_KERBIN + h
+                dgamma = math.cos(gamma) * (v / r - g / v)
+            elif v > 0.5:
+                dgamma = -g * math.cos(gamma) / v
+            else:
+                dgamma = 0.0
+
+        ddr = v * math.cos(gamma)
+
+        if T_total_N > 0:
+            drag_loss += (D_N / mass) * dt
+            grav_loss += g * math.sin(gamma) * dt
+
+        # --- Integrate ---
+        v += dv * dt
+        h += dh * dt
+        dr += ddr * dt
+
+        if final_mode == "BURN":
+            frac = min(1.0, h / target_apo_m) if target_apo_m > 0 else 1.0
+            gamma_floor = math.radians(15.0) * (1.0 - frac)
+            gamma = max(gamma + dgamma * dt, gamma_floor)
+        elif final_mode == "CIRCULARIZE":
+            gamma = max(gamma + dgamma * dt, 0.0)
+        elif final_mode is not None:
+            gamma = gamma + dgamma * dt
+        else:
+            gamma = max(gamma + dgamma * dt, 0.0)
+
+        # --- Propellant consumption ---
+        for i, mdot_kgs in per_stage_mdot.items():
+            dm = mdot_kgs * dt
+            stage_states[i]["prop"] -= dm
+            mass -= dm
+
+        # --- Staging: check for burnout ---
+        for i in range(n_stages):
+            st = stage_states[i]
+            stage = vehicle.stages[i]
+            if not st["active"] or st["separated"] or st["prop"] > 0:
+                continue
+
+            st["prop"] = 0.0
+
+            if i == last_stage_idx:
+                # Last stage: mode transition, no separation
+                if final_mode == "BURN":
+                    final_mode = "COAST_APO"
+                elif final_mode == "CIRCULARIZE":
+                    ap, pe = orbital_params(h, v, gamma)
+                    final_mode = "ORBIT" if pe >= target_orbit_km - 5.0 else "COAST"
+                continue
+
+            # Non-final stage: separate
+            st["separated"] = True
+            st["active"] = False
+            mass -= stage_dry_kg[i]
+
+            ap, pe = orbital_params(h, v, gamma)
+            staging_events.append(SeparationEvent(
+                t=t, altitude=h, velocity=v, gamma=gamma,
+                mass=mass / 1000.0, apoapsis=ap, periapsis=pe,
+            ))
+
+            if not stage.parallel:
+                for j in range(i + 1, n_stages):
+                    if not stage_states[j]["separated"]:
+                        stage_states[j]["active"] = True
+                        if j == last_stage_idx:
+                            final_mode = "BURN"
+                        if not vehicle.stages[j].parallel:
+                            break
+
+        # --- Final-stage phase transitions ---
+        if final_mode == "BURN" and stage_states[last_stage_idx]["prop"] > 0:
+            ap_now = orbital_params(h, v, gamma)[0]
+            if ap_now >= target_orbit_km:
+                final_mode = "COAST_APO"
+
+        if final_mode == "COAST_APO":
+            v_v = v * math.sin(gamma)
+            if prev_v_vert is not None and prev_v_vert > 0 and v_v <= 0:
+                final_mode = ("CIRCULARIZE"
+                              if stage_states[last_stage_idx]["prop"] > 0
+                              else "COAST")
+            prev_v_vert = v_v
+
+        if final_mode == "CIRCULARIZE" and stage_states[last_stage_idx]["prop"] > 0:
+            pe_now = orbital_params(h, v, gamma)[1]
+            if pe_now >= target_orbit_km - 5.0:
+                final_mode = "ORBIT"
+
+        t += dt
+        step += 1
+
+        if step % sample_every_n == 0:
+            sampled_pts.append(make_point(_phase_label()))
+
+        if h < -100.0:
+            break
+
+    ap_final, pe_final = orbital_params(h, v, gamma)
+
+    return TrajectoryResult(
+        points=sampled_pts,
+        all_points=sampled_pts,
+        booster_sep=staging_events[0] if staging_events else None,
+        core_burnout=None,
+        max_q_point=max_q_pt,
+        drag_loss_total=drag_loss,
+        grav_loss_total=grav_loss,
+        apoapsis_km=ap_final,
+        periapsis_km=pe_final,
+        staging_events=staging_events,
     )

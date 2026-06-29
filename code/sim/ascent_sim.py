@@ -51,7 +51,10 @@ if __name__ == "__main__":
 
 from sim.constants import G0, PERSEUS_1_DEFAULT
 from sim.vehicle import VehicleConfig
-from sim.trajectory import integrate, PITCH_PROGRAMS, TrajectoryResult
+from sim.trajectory import (
+    integrate, integrate_generic, PITCH_PROGRAMS, TrajectoryResult,
+    pitch_nominal,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +215,28 @@ def print_table(result: TrajectoryResult):
         print(f"{p.t:>6.1f}  {p.altitude/1000:>8.2f}  {p.downrange/1000:>7.2f}  "
               f"{p.velocity:>7.0f}  {p.v_horiz:>7.0f}  {p.v_vert:>7.0f}  "
               f"{p.pitch_from_v:>7.1f}  {p.apoapsis:>8.1f}  {p.periapsis:>8.0f}  {p.phase}")
+
+
+def run_generic(vehicle, db=None, pitch_program=None, **kwargs) -> TrajectoryResult:
+    """Run the generic N-stage trajectory integrator.
+
+    Parameters
+    ----------
+    vehicle : GenericVehicle
+        Vehicle definition assembled from database parts.
+    db : PartsDatabase, optional
+        Parts database.  Defaults to the bundled CSV.
+    pitch_program : callable, optional
+        Pitch program function.  Defaults to nominal.
+    **kwargs
+        Forwarded to integrate_generic (dt, t_max, etc.).
+    """
+    if db is None:
+        from sim.parts_db import PartsDatabase
+        db = PartsDatabase.load_default()
+    if pitch_program is None:
+        pitch_program = pitch_nominal
+    return integrate_generic(vehicle, db, pitch_program, **kwargs)
 
 
 def compare_programs(vehicle: VehicleConfig, programs: list[str]):

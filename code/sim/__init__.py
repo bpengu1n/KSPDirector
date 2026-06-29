@@ -28,16 +28,25 @@ trajectory  Numerical integrator (Euler, dt=0.02s), pitch programs
 ascent_sim  High-level run_ascent() API + CLI entry point
 """
 
-from .ascent_sim import run_ascent, result_to_dict, compare_programs
+from .ascent_sim import run_ascent, run_generic, result_to_dict, compare_programs
 from .vehicle import VehicleConfig
 from .trajectory import PITCH_PROGRAMS, TrajectoryResult, TrajectoryPoint
+from .parts_db import PartsDatabase, Engine, FuelTank, StructuralPart
+from .generic_vehicle import GenericVehicle, StageDefinition
 
 __all__ = [
     "run_ascent",
+    "run_generic",
     "result_to_dict",
     "compare_programs",
     "VehicleConfig",
     "PITCH_PROGRAMS",
     "TrajectoryResult",
     "TrajectoryPoint",
+    "PartsDatabase",
+    "Engine",
+    "FuelTank",
+    "StructuralPart",
+    "GenericVehicle",
+    "StageDefinition",
 ]
