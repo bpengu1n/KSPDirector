@@ -3,15 +3,16 @@
 ## Executive Summary
 
 Replace the Telemachus WebSocket telemetry client with a kRPC-based client,
-enabling arbitrary vehicle support, richer telemetry, and eliminating
-Telemachus topic-naming fragility. The Python sim, flight director, web UI,
-scenario system, and test suite are preserved with targeted modifications.
+enabling arbitrary vehicle support, user-defined mission plans, richer
+telemetry, and eliminating Telemachus topic-naming fragility. The Python sim,
+flight director, web UI, scenario system, and test suite are preserved with
+targeted modifications.
 
-**Estimated total effort: 6–9 developer-days across 5 phases.**
+**Estimated total effort: 8–12 developer-days across 5 phases.**
 
 ---
 
-## Phase 1: kRPC Client Drop-In Replacement
+## Phase 1: kRPC Client Drop-In Replacement ✓ COMPLETE
 
 **Goal:** Replace `TelematicusClient` with a `KRPCClient` class that produces
 the same `get_state()` / `get_trajectory()` dict format, so the rest of the
@@ -19,15 +20,13 @@ pipeline (FlightDirector, server.py broadcast loop, web UI) works unchanged.
 
 ### Tasks
 
-| # | Task | Files | LOE | Notes |
-|---|------|-------|-----|-------|
-| 1.1 | Add `krpc` to requirements.txt | `requirements.txt` | 15 min | `pip install krpc` |
-| 1.2 | Create `KRPCClient` class | `mission_control/krpc_client.py` (new) | 4–6 hr | See design below |
-| 1.3 | Wire into server.py as a third telemetry source | `mission_control/server.py` | 1–2 hr | `--krpc-host` flag |
-| 1.4 | Write unit tests for KRPCClient | `tests/test_krpc_client.py` (new) | 3–4 hr | Mock `krpc.connect()` |
-| 1.5 | Integration test with live KSP | Manual | 2–3 hr | Requires KSP + kRPC running |
-
-**Subtotal: 1.5–2 days**
+| # | Task | Files | Status |
+|---|------|-------|--------|
+| 1.1 | Add `krpc` to requirements.txt | `requirements.txt` | Done |
+| 1.2 | Create `KRPCClient` class | `mission_control/krpc_client.py` | Done (270 lines) |
+| 1.3 | Wire into server.py as a third telemetry source | `mission_control/server.py` | Done (`--krpc-host` flag) |
+| 1.4 | Write unit tests for KRPCClient | `tests/test_krpc_client.py` | Done (31 tests, all pass) |
+| 1.5 | Integration test with live KSP | Manual | Pending (requires KSP + kRPC) |
 
 ### KRPCClient Design
 
@@ -112,10 +111,17 @@ class KRPCClient:
 
 ---
 
-## Phase 2: Vehicle Auto-Detection from kRPC Parts API
+## Phase 2: Vehicle Detection + Mission Planning
 
-**Goal:** Automatically build a `VehicleConfig`-equivalent from the active
-vessel's part tree, eliminating manual vehicle configuration.
+**Goal:** Auto-detect the active vessel's configuration from kRPC, accept a
+user-provided mission plan (target orbit, pitch preference), generate a
+nominal trajectory from detected vehicle + plan, and feed that nominal into
+the FlightDirector pipeline.
+
+This phase bridges the gap between "raw kRPC telemetry" (Phase 1) and
+"vehicle-aware flight direction" (Phase 3). The key insight is that the
+nominal trajectory — not the vehicle spec — is what drives FlightDirector
+thresholds.
 
 ### Tasks
 
@@ -123,30 +129,75 @@ vessel's part tree, eliminating manual vehicle configuration.
 |---|------|-------|-----|-------|
 | 2.1 | Create `VehicleProfile` from kRPC part data | `mission_control/vehicle_detect.py` (new) | 6–8 hr | See design below |
 | 2.2 | Compute per-stage ΔV from part data | Same file | 4–6 hr | Tsiolkovsky from parts |
-| 2.3 | Pass vehicle profile to FlightDirector | `mission_control/nominal_compare.py` | 2–3 hr | Parameterize thresholds |
-| 2.4 | Tests for vehicle detection | `tests/test_vehicle_detect.py` (new) | 3–4 hr | Mock kRPC vessel objects |
-| 2.5 | Integration test with Perseus 1 in KSP | Manual | 1–2 hr | Verify detected config matches known values |
+| 2.3 | Create `MissionPlan` dataclass | `mission_control/mission_plan.py` (new) | 2–3 hr | Target orbit, pitch pref, staging overrides |
+| 2.4 | `VehicleProfile.to_vehicle_config()` bridge | `mission_control/vehicle_detect.py` | 3–4 hr | Convert detected stages → sim-compatible config |
+| 2.5 | Generalize `run_ascent()` for N stages | `sim/trajectory.py`, `sim/ascent_sim.py` | 10–14 hr | Currently assumes BOOST/CORE; needs N-stage |
+| 2.6 | Nominal from detected vehicle + mission plan | `mission_control/nominal_compare.py` | 3–4 hr | `run_ascent(profile.to_vehicle_config(), plan)` |
+| 2.7 | `/api/mission-plan` endpoint | `mission_control/server.py` | 2–3 hr | Accept/update target orbit from web UI |
+| 2.8 | Tests for vehicle detection + mission plan | `tests/test_vehicle_detect.py` (new) | 4–6 hr | Mock kRPC vessel, N-stage sim runs |
+| 2.9 | Integration test with Perseus 1 in KSP | Manual | 1–2 hr | Verify detected config matches known values |
 
-**Subtotal: 2–3 days**
+**Subtotal: 4–5.5 days**
+
+### MissionPlan Design
+
+```python
+@dataclass
+class MissionPlan:
+    """User-provided mission parameters that pair with a detected vehicle."""
+
+    target_orbit_alt_km: float = 80.0
+    target_inclination_deg: float = 0.0
+    pitch_program: str = "auto"      # "auto", "steep", "shallow", or custom callable name
+    staging_overrides: dict = field(default_factory=dict)  # manual corrections if auto-detect is wrong
+
+    @classmethod
+    def from_dict(cls, data: dict) -> 'MissionPlan':
+        """Build from API request body."""
+        ...
+
+    def validate(self) -> list[str]:
+        """Return list of validation errors (empty = valid)."""
+        errors = []
+        if not (10 <= self.target_orbit_alt_km <= 1000):
+            errors.append("target_orbit_alt_km must be 10-1000")
+        if not (-180 <= self.target_inclination_deg <= 180):
+            errors.append("target_inclination_deg must be -180 to 180")
+        return errors
+```
+
+The `MissionPlan` is persisted in `MissionSession` alongside the
+`VehicleProfile` and the generated nominal trajectory.
 
 ### Vehicle Detection Design
 
 ```python
+@dataclass
+class StageProfile:
+    """Per-stage breakdown from kRPC parts inspection."""
+    index: int
+    label: str                # auto-generated: "SRB", "Core", "Upper", or "Stage N"
+    engines: list[str]        # engine part names
+    fuel_types: list[str]     # "SolidFuel", "LiquidFuel+Oxidizer"
+    dv_vac: float             # m/s
+    dv_asl: float             # m/s
+    thrust_vac: float         # kN
+    thrust_asl: float         # kN
+    isp_vac: float            # s
+    isp_asl: float            # s
+    burn_time: float          # s
+    wet_mass: float           # tonnes
+    dry_mass: float           # tonnes
+    fuel_mass: float          # tonnes
+
+@dataclass
 class VehicleProfile:
     """Auto-detected vehicle configuration from kRPC part tree."""
 
-    # Detected properties
     total_mass: float           # tonnes
     dry_mass: float             # tonnes
-    stages: list[StageProfile]  # per-stage breakdown
-    has_boosters: bool
-    booster_type: str           # 'hammer', 'thumper', etc.
-    n_boosters: int
-
-    # Derived thresholds for FlightDirector
-    booster_burnout_alt_km: float   # estimated from booster burn time + trajectory
-    core_burnout_alt_km: float      # estimated from core ΔV + trajectory
-    target_orbit_km: float          # from maneuver node if available, else 80 km default
+    stages: list[StageProfile]  # per-stage breakdown, firing order
+    n_stages: int
 
     @classmethod
     def from_vessel(cls, vessel) -> 'VehicleProfile':
@@ -154,21 +205,51 @@ class VehicleProfile:
         stages = []
         for stage_num in range(vessel.control.current_stage, -1, -1):
             engines = [p for p in vessel.parts.in_decouple_stage(stage_num)
-                       if p.engine is not None and p.engine.active]
+                       if p.engine is not None]
+            if not engines:
+                continue
             fuel = vessel.resources_in_decouple_stage(stage_num, cumulative=False)
             # ... build StageProfile with engine ISP, thrust, fuel mass
-        return cls(stages=stages, ...)
+            stages.append(StageProfile(...))
+        return cls(stages=stages, total_mass=vessel.mass,
+                   dry_mass=..., n_stages=len(stages))
 
-    def to_flight_director_config(self) -> dict:
-        """Generate threshold config for FlightDirector parameterization."""
-        return {
-            'core_burnout_alt_threshold': self.core_burnout_alt_km * 1000 * 1.1,
-            'core_burnout_apo_threshold': ...,
-            'met_terrier_established': ...,
-            'full_lf': self.stages[-1].fuel_capacity,
-            'target_orbit_alt': self.target_orbit_km,
-        }
+    def to_vehicle_config(self) -> 'VehicleConfig':
+        """Convert detected profile to a VehicleConfig the sim can run.
+
+        For ≤3 stage vehicles (boosters + core + upper), maps directly to
+        the existing VehicleConfig fields. For N>3 stages, produces a
+        GeneralizedVehicleConfig (see Phase 2.5).
+        """
+        ...
+
+    def stage_labels(self) -> list[str]:
+        """Human-readable stage labels for the UI."""
+        return [s.label for s in self.stages]
 ```
+
+### Nominal Trajectory Generation
+
+The critical pipeline for producing a nominal from detected vehicle + plan:
+
+```
+KRPCClient.get_vessel() → VehicleProfile.from_vessel()
+                              ↓
+                        MissionPlan (user-provided target orbit, pitch pref)
+                              ↓
+                        profile.to_vehicle_config()
+                              ↓
+                        run_ascent(config, pitch_program)
+                              ↓
+                        NominalTrajectory(result.points)
+                              ↓
+                        FlightDirector(nominal, config_from_nominal)
+```
+
+The FlightDirector config (Phase 3) is derived from the *nominal trajectory
+run*, not from the vehicle profile directly. Stage burnout altitudes, expected
+apoapsis at each stage transition, and fuel percentage thresholds all come
+from where staging events occur in the nominal trajectory.
 
 ### Per-Stage ΔV Computation
 
@@ -182,7 +263,7 @@ def compute_stage_dv(vessel, stage_num: int) -> float:
     if not engines:
         return 0.0
 
-    # Weighted average ISP
+    # Weighted average ISP (thrust-weighted harmonic mean)
     total_thrust = sum(e.max_vacuum_thrust for e in engines)
     if total_thrust == 0:
         return 0.0
@@ -216,85 +297,271 @@ def compute_stage_dv(vessel, stage_num: int) -> float:
 vehicles. Crossfeed-heavy designs (asparagus) may diverge more. For Perseus 1
 specifically, this should be exact since it has simple serial staging.
 
+### Sim Generalization (Task 2.5)
+
+The current sim assumes a two-phase ascent (BOOST → CORE). Generalizing to
+N stages requires:
+
+1. **`trajectory.py`**: The integrator loop currently switches from BOOST to
+   CORE when SRB fuel depletes. Replace with a general staging model: iterate
+   through `StageProfile` list, transition when each stage's fuel mass reaches
+   zero, update thrust/ISP/mass accordingly. Phase labels become `STAGE_0`,
+   `STAGE_1`, ... (or use `StageProfile.label` if available).
+
+2. **`ascent_sim.py`**: `run_ascent()` currently takes a `VehicleConfig`
+   designed around Perseus 1's 3-stage stack. Add a `GeneralizedVehicleConfig`
+   that accepts an ordered list of stages, each with engine stats and fuel.
+   The existing `VehicleConfig` becomes a factory that produces the
+   generalized form for backward compatibility.
+
+3. **Pitch program selection**: For arbitrary vehicles, the pitch program
+   needs to adapt to TWR. High-TWR vehicles (>2.0) need steeper initial
+   climbs; low-TWR vehicles (<1.3) need shallower turns. The "auto" option
+   in `MissionPlan` selects from existing programs based on pad TWR:
+   - TWR > 2.0: `steep`
+   - 1.4 ≤ TWR ≤ 2.0: `nominal`
+   - TWR < 1.4: `shallow`
+
+   Custom pitch programs remain available for users who want precise control.
+
+4. **Phase names**: The FlightDirector currently uses hardcoded phase names
+   (`BOOST`, `CORE`, `TERRIER`, `CIRCULARIZE`, `ORBIT`). These become
+   dynamic: `STAGE_0`, `STAGE_1`, ..., `CIRCULARIZE`, `ORBIT`. The UI
+   displays `StageProfile.label` instead of hardcoded strings.
+
+**This is the highest-risk task in the plan.** The sim's physics integrator is
+general, but the staging logic and phase model are tightly coupled to
+Perseus 1. Estimate 1.5–2 days for this task alone. The existing test suite
+(325+ non-browser tests) must remain green throughout — backward compatibility
+via the existing `VehicleConfig` producing the same results is the acceptance
+criterion.
+
+### Inclination Limitation
+
+The current sim is 2D (vertical + downrange). It does not model orbital
+inclination — all trajectories assume equatorial launch heading 090°.
+
+For non-equatorial orbits, inclination affects launch heading (not 090°) and
+increases the required ΔV slightly (cosine loss from non-equatorial Kerbin
+rotation). This is a minor effect for low inclinations but significant for
+polar orbits (~174 m/s penalty at Kerbin).
+
+**For now, inclination is a display/advisory parameter only** — stored in
+`MissionPlan`, shown in the UI, but not modeled in the sim. The nominal
+trajectory assumes equatorial. This is acceptable because:
+- The ascent *profile* (altitude vs. time, staging events) is nearly identical
+  for any inclination — only heading differs
+- The FlightDirector's go/no-go gates care about altitude/apoapsis/fuel, not
+  heading
+- Heading advisory ("TURN TO 045° FOR POLAR ORBIT") can be added as a simple
+  advisory without changing the trajectory model
+
+Full 3D trajectory modeling is future work.
+
 ---
 
-## Phase 3: Parameterize Flight Director Thresholds
+## Phase 3: Derive FlightDirector Config from Nominal Trajectory
 
 **Goal:** Remove Perseus 1-specific hardcoded thresholds from
-`nominal_compare.py` so the flight director works with any vehicle.
+`nominal_compare.py`. Derive all phase boundaries and go/no-go gates from
+the nominal trajectory run (Phase 2.6), so the flight director works with
+any vehicle + mission plan combination.
+
+The key principle: **the nominal trajectory is the source of truth for
+thresholds, not the vehicle spec.** You detect the vehicle, run the sim,
+and the trajectory tells you where each stage burns out, what apoapsis to
+expect at each transition, and when circularization should begin. Those
+trajectory events become the FlightDirector's configuration.
 
 ### Tasks
 
 | # | Task | Files | LOE | Notes |
 |---|------|-------|-----|-------|
-| 3.1 | Create `FlightDirectorConfig` dataclass | `mission_control/nominal_compare.py` | 2–3 hr | Extract all hardcoded thresholds |
-| 3.2 | Accept config in FlightDirector.__init__ | Same | 1–2 hr | Default = current Perseus 1 values |
-| 3.3 | Generate config from VehicleProfile | `mission_control/vehicle_detect.py` | 2–3 hr | Map detected vehicle → thresholds |
-| 3.4 | Update all existing tests to pass config | `tests/test_p*.py`, `tests/test_scenario.py` | 2–3 hr | Default config = backward compatible |
-| 3.5 | New tests for non-Perseus vehicles | `tests/test_vehicle_detect.py` | 2–3 hr | Thumper variant, no-booster, etc. |
+| 3.1 | Create `FlightDirectorConfig` dataclass | `mission_control/nominal_compare.py` | 2–3 hr | Extract all 20+ hardcoded thresholds |
+| 3.2 | `FlightDirectorConfig.from_nominal()` | Same | 4–6 hr | Derive config from trajectory staging events |
+| 3.3 | Accept config in `FlightDirector.__init__` | Same | 1–2 hr | Default = current Perseus 1 values |
+| 3.4 | Dynamic phase names | Same | 2–3 hr | `STAGE_0`...`STAGE_N` + `CIRCULARIZE` + `ORBIT` |
+| 3.5 | Update all existing tests | `tests/test_p*.py`, `tests/test_scenario.py` | 2–3 hr | Default config = backward compatible |
+| 3.6 | New tests for non-Perseus configs | `tests/test_flight_director_config.py` (new) | 3–4 hr | 2-stage, 4-stage, no-booster vehicles |
 
-**Subtotal: 1.5–2 days**
+**Subtotal: 2–3 days**
 
 ### Thresholds to Extract
 
 ```python
 @dataclass
 class FlightDirectorConfig:
-    """All tunable thresholds for the flight director, extracted from
-    what was previously hardcoded for Perseus 1."""
+    """All tunable thresholds for the flight director.
 
-    # Phase detection (detect_phase)
-    core_burnout_alt_m: float = 17_000      # altitude above which → TERRIER
-    core_burnout_apo_km: float = 32         # apoapsis above which → TERRIER
-    orbit_pe_km: float = 70                 # periapsis threshold for ORBIT
+    Default values match current Perseus 1 hardcoded behavior for backward
+    compatibility. For arbitrary vehicles, use from_nominal() to derive
+    thresholds from a nominal trajectory run.
+    """
+
+    # Phase transitions — derived from nominal trajectory staging events
+    stage_transitions: list[StageTransition] = field(default_factory=list)
+    # Each StageTransition: {phase_name, alt_m, apo_km, met_s}
+    # Example for Perseus 1:
+    #   [("BOOST", 0, 0, 0), ("CORE", 2890, 5.2, 25.3), ("TERRIER", 17000, 32, 63)]
+
+    # General thresholds
+    target_orbit_alt_km: float = 80.0
+    orbit_pe_km: float = 70                 # periapsis threshold for ORBIT phase
     circularize_apo_km: float = 60          # apoapsis threshold for CIRCULARIZE
     circularize_pe_km: float = 65           # periapsis ceiling for CIRCULARIZE
     circularize_vvert_ms: float = 50        # |v_vert| ceiling for CIRCULARIZE
 
-    # Advisory generation (generate_advisory)
-    target_orbit_alt_km: float = 80.0       # nominal target orbit
-    met_terrier_established_s: float = 70.0 # MET before ABORT can fire
-    full_lf_units: float = 360.0            # full liquid fuel for % calculations
+    # Advisory generation
+    abort_met_guard_s: float = 70.0         # MET before ABORT gate can fire
     pitch_deviation_threshold: float = 12.0 # degrees off nominal → CAUTION
 
-    # Gate assessment (assess_gates)
-    booster_sep_alt_km: float = 1.5         # GO threshold
-    booster_sep_vel_ms: float = 150         # GO threshold
-    core_bo_apo_go_km: float = 20           # GO threshold
-    core_bo_apo_marginal_km: float = 12     # MARGINAL threshold
-    mid_terr_apo_go_km: float = 40          # GO threshold
-    late_terr_apo_go_km: float = 70         # GO threshold
+    # Go/No-Go gates — derived from nominal staging events
+    gate_configs: list[GateConfig] = field(default_factory=list)
+    # Each GateConfig: {name, phase, metric, go_threshold, marginal_threshold}
 
     @classmethod
     def for_perseus_1(cls) -> 'FlightDirectorConfig':
         """Return the default Perseus 1 configuration (backward compatible)."""
-        return cls()
+        return cls(
+            stage_transitions=[
+                StageTransition("BOOST", 0, 0, 0),
+                StageTransition("CORE", 2890, 5.2, 25.3),
+                StageTransition("TERRIER", 17000, 32.0, 63.0),
+            ],
+            target_orbit_alt_km=80.0,
+            abort_met_guard_s=70.0,
+            # ... remaining Perseus 1 values
+        )
+
+    @classmethod
+    def from_nominal(cls, trajectory_result, mission_plan) -> 'FlightDirectorConfig':
+        """Derive all thresholds from a nominal trajectory run.
+
+        Scans trajectory points for staging events (phase transitions),
+        extracts altitude/apoapsis/MET at each transition, and builds
+        phase boundaries + gate thresholds with appropriate margins.
+        """
+        transitions = []
+        prev_phase = None
+        for pt in trajectory_result.points:
+            if pt.phase != prev_phase:
+                transitions.append(StageTransition(
+                    phase_name=pt.phase,
+                    alt_m=pt.altitude,
+                    apo_km=pt.apoapsis or 0,
+                    met_s=pt.t,
+                ))
+            prev_phase = pt.phase
+
+        # Gate thresholds: 80% of nominal altitude/apoapsis = MARGINAL,
+        # 90% = GO. Derived from trajectory, not magic numbers.
+        gates = []
+        for i, trans in enumerate(transitions[1:], 1):
+            gates.append(GateConfig(
+                name=f"{transitions[i-1].phase_name} B/O",
+                phase=transitions[i-1].phase_name,
+                metric="apoapsis_km",
+                go_threshold=trans.apo_km * 0.9,
+                marginal_threshold=trans.apo_km * 0.5,
+            ))
+
+        return cls(
+            stage_transitions=transitions,
+            target_orbit_alt_km=mission_plan.target_orbit_alt_km,
+            abort_met_guard_s=transitions[-1].met_s + 7.0,
+            gate_configs=gates,
+        )
 ```
+
+### Dynamic Phase Names
+
+Current hardcoded phases: `BOOST`, `CORE`, `TERRIER`, `CIRCULARIZE`, `ORBIT`.
+
+For arbitrary vehicles, phase names during powered ascent become dynamic:
+- `STAGE_0`, `STAGE_1`, `STAGE_2`, ... (or `StageProfile.label` from Phase 2)
+- `CIRCULARIZE` — still a fixed concept (low v_vert + high pe)
+- `ORBIT` — still a fixed concept (pe > threshold)
+
+`detect_phase()` currently uses hardcoded altitude/apoapsis thresholds for
+`BOOST→CORE` and `CORE→TERRIER` transitions. With `FlightDirectorConfig`,
+it scans `stage_transitions` to find which phase boundary the current
+altitude/apoapsis has crossed. The hysteresis logic (prev_phase) is preserved.
 
 ### Backward Compatibility Strategy
 
 - `FlightDirectorConfig()` with no args produces exact current behavior
-- `FlightDirector(nominal)` still works (uses default config)
+- `FlightDirector(nominal)` still works (uses default config internally)
 - `FlightDirector(nominal, config=FlightDirectorConfig.for_perseus_1())` is explicit
 - All existing tests pass without modification (default config matches)
+- `from_nominal()` with Perseus 1 trajectory produces values within 5% of
+  the hardcoded defaults — verified by test
 
 ---
 
-## Phase 4: UI Updates for Arbitrary Vehicles
+## Phase 4: UI for Arbitrary Vehicles + Mission Planning
 
-**Goal:** Remove Perseus 1-specific labels and hardcoded values from the web UI.
+**Goal:** Remove Perseus 1-specific labels from the web UI, add mission plan
+input fields, and enable re-computation of the nominal trajectory when the
+user changes their plan.
 
 ### Tasks
 
 | # | Task | Files | LOE | Notes |
 |---|------|-------|-----|-------|
-| 4.1 | Serve vehicle profile via `/api/vehicle` | `server.py` | 1 hr | Stage names, fuel caps, etc. |
+| 4.1 | Serve vehicle profile via `/api/vehicle` | `server.py` | 1 hr | Stage names, fuel caps, ΔV |
 | 4.2 | Load vehicle profile in JS on connect | `static/index.html` | 2–3 hr | Replace hardcoded stage labels |
 | 4.3 | Dynamic fuel bar max values | `static/index.html` | 1 hr | Use `liquid_fuel_max` from state |
 | 4.4 | Dynamic stage labels | `static/index.html` | 1–2 hr | "SRB" / "Core" / "Terrier" → from profile |
-| 4.5 | Update Playwright tests for dynamic labels | `tests/test_ui_playwright.py` | 2–3 hr | Parameterize expected text |
+| 4.5 | Mission plan input panel | `static/index.html` | 3–4 hr | Target orbit alt/inc, pitch selector |
+| 4.6 | "Compute Nominal" action | `static/index.html`, `server.py` | 2–3 hr | Re-run sim + update FD on plan change |
+| 4.7 | Vehicle detection trigger | `server.py`, `krpc_client.py` | 1–2 hr | Re-detect on staging event or user request |
+| 4.8 | Update Playwright tests | `tests/test_ui_playwright.py` | 3–4 hr | Dynamic labels, mission plan panel |
 
-**Subtotal: 1–1.5 days**
+**Subtotal: 2–2.5 days**
+
+### Mission Plan Panel Design
+
+The Scenario panel in the web UI gains a "Mission Plan" section (visible when
+in kRPC mode, not simulation mode):
+
+```
+┌─ MISSION PLAN ──────────────────────────────┐
+│  Target Orbit:  [  80 ] km    Inc: [ 0.0 ]° │
+│  Pitch Program: [nominal ▾]                  │
+│  [ Detect Vehicle ]  [ Compute Nominal ]     │
+│                                              │
+│  Vehicle: 3 stages, 14.21t, pad TWR 1.77    │
+│  Nominal Ap: 24.6 km (core B/O)             │
+│  Est. ΔV to orbit: 2,656 m/s                │
+└──────────────────────────────────────────────┘
+```
+
+- **Detect Vehicle** queries `KRPCClient` for the current vessel's part tree
+  and rebuilds the `VehicleProfile`
+- **Compute Nominal** runs `run_ascent()` with the detected vehicle +
+  current plan parameters, regenerates the `NominalTrajectory` and
+  `FlightDirectorConfig`, and pushes the updated nominal to all clients
+- Both actions available via API: `POST /api/vehicle/detect`,
+  `POST /api/mission-plan/apply`
+
+### Re-Nominal Workflow
+
+When the user changes target orbit or pitch program:
+
+```
+User changes target orbit → POST /api/mission-plan/apply
+  → server updates MissionPlan in MissionSession
+  → server calls profile.to_vehicle_config()
+  → server calls run_ascent(config, plan.pitch_program)
+  → server rebuilds NominalTrajectory + FlightDirectorConfig.from_nominal()
+  → server emits Socket.IO "nominal" event with new trajectory
+  → web UI replaces nominal overlay on trajectory plot + globe
+```
+
+This is essentially the same flow as loading a scenario preset, but triggered
+by mission plan edits instead of preset selection. The existing
+`broadcast_loop` continues to compare actual telemetry against the
+(now-updated) nominal.
 
 ---
 
@@ -899,8 +1166,10 @@ computation becomes optional. The integration path:
 | kRPC stream latency too high for real-time flight director | Low | High | Benchmark early in Phase 1. Fallback: reduce stream count, batch less-critical fields to polling. kRPC is protobuf over TCP — should be <10ms on localhost. |
 | Per-stage ΔV manual computation inaccurate for complex vehicles | Medium | Medium | Validate against KSP's built-in readout for 3–5 vehicle types. Accept 5% tolerance. Crossfeed designs may diverge — document as known limitation. |
 | kRPC stops being maintained | Low | High | KSP 1 is frozen — no new game updates to break compatibility. kRPC v0.5.4 (June 2024) is the likely final version needed. LGPLv3 allows forking. Worst case: pivot to COA B. |
-| Vehicle auto-detection misidentifies stages | Medium | Medium | Perseus 1 is the primary test vehicle — verify exact match. Add heuristics for common patterns (serial staging, asparagus). Allow manual override in UI. |
+| Vehicle auto-detection misidentifies stages | Medium | Medium | Perseus 1 is the primary test vehicle — verify exact match. Add heuristics for common patterns (serial staging, asparagus). Allow manual override via `MissionPlan.staging_overrides`. |
+| Sim generalization (N-stage) regresses Perseus 1 numbers | Low | Critical | Physics integrator unchanged. Only staging model generalized. Acceptance: `VehicleConfig()` default path must produce identical results. 325+ existing tests enforce this. |
 | FlightDirector threshold parameterization breaks existing tests | Low | Low | Default config exactly matches current hardcoded values. Run full suite after each change. |
+| `from_nominal()` produces poor thresholds for unusual vehicles | Medium | Medium | Gate thresholds use percentage-of-nominal (90% GO, 50% MARGINAL). Test with at least 3 vehicle types: Perseus 1, single-stage, 4-stage. Allow user override via `MissionPlan`. |
 | kRPC reference frame mismatch (pitch convention) | Low | High | Verify in Phase 1.5: compare kRPC `flight.pitch` to Telemachus `n.pitch` on the same vessel. Both should be degrees from horizon. Test explicitly. |
 | Network connectivity between KSP machine and server | Low | Low | Same risk as Telemachus. kRPC defaults to localhost; LAN requires firewall config. Document in README. |
 
@@ -909,10 +1178,23 @@ computation becomes optional. The integration path:
 ## Timeline
 
 ```
-Phase 1: kRPC Client                    [1.5–2 days]  ← start here
-Phase 2: Vehicle Auto-Detection         [2–3 days]
-Phase 3: Parameterize FlightDirector    [1.5–2 days]  ← can overlap with Phase 2
-Phase 4: UI Updates                     [1–1.5 days]  ← after Phase 3
+Phase 1: kRPC Client                    [1.5–2 days]  ✓ COMPLETE
+Phase 2: Vehicle Detection + Mission    [4–5.5 days]  ← next
+  2.1–2.2  VehicleProfile + ΔV calc              [1.5–2 days]
+  2.3      MissionPlan dataclass                  [2–3 hr]
+  2.4      VehicleProfile → VehicleConfig bridge  [3–4 hr]
+  2.5      Generalize run_ascent() for N stages   [1.5–2 days]  ← highest risk
+  2.6      Nominal from detected vehicle          [3–4 hr]
+  2.7      /api/mission-plan endpoint             [2–3 hr]
+  2.8–2.9  Tests + integration                    [5–8 hr]
+Phase 3: FlightDirector from Nominal    [2–3 days]    ← can overlap with 2.5+
+  3.1–3.3  Config dataclass + from_nominal()      [1–1.5 days]
+  3.4      Dynamic phase names                    [2–3 hr]
+  3.5–3.6  Test updates + new tests               [5–7 hr]
+Phase 4: UI + Mission Plan Panel        [2–2.5 days]  ← after Phase 3
+  4.1–4.4  Dynamic labels + fuel bars             [5–7 hr]
+  4.5–4.6  Mission plan panel + compute nominal   [5–7 hr]
+  4.7–4.8  Vehicle re-detect + test updates       [4–6 hr]
 Phase 5: kRPC Upstream PR               [2–3 days]    ← independent, parallel
   5.0  Environment setup (Bazel/Mono/KSP DLLs)  [3–6 hr]  (+1–2 days if first time)
   5.1  Stage.cs wrapper class                    [4–6 hr]
@@ -922,32 +1204,35 @@ Phase 5: kRPC Upstream PR               [2–3 days]    ← independent, paralle
   5.5  Client auto-gen verification              [1 hr]
   5.6  PR submission + review responses          [2–4 hr]
 
-Total sequential: ~7–11 developer-days
-With parallelism (Phases 2/3 overlap, Phase 5 in parallel): ~5–8 developer-days
+Total sequential: ~11–16 developer-days
+With parallelism (Phases 2.5/3 overlap, Phase 5 in parallel): ~8–12 developer-days
 ```
 
 ### Milestones
 
 | Milestone | Definition of Done | Target |
 |-----------|-------------------|--------|
-| M1: kRPC telemetry works | `KRPCClient.get_state()` returns valid data, FlightDirector processes it, web UI displays it. All existing tests pass. | End of Phase 1 |
-| M2: Arbitrary vehicle support | Perseus 1 auto-detected correctly. Non-Perseus vehicle (e.g., stock Kerbal X) produces reasonable FlightDirector output. | End of Phase 3 |
-| M3: UI generalized | No Perseus 1-specific text visible when flying a non-Perseus vehicle. Stage labels, fuel bars, and gate thresholds reflect detected vehicle. | End of Phase 4 |
-| M4: kRPC issue commented | Design proposal posted on issue #336 with DeltaVStageInfo approach. Maintainer feedback requested before full implementation. | Phase 5 start |
-| M5: kRPC PR submitted | PR opened against `krpc/krpc` with Stage.cs, Vessel.Stages, tests, CHANGES.txt. | End of Phase 5 |
-| M6: kRPC PR merged + integrated | Native stage API available in released kRPC; manual Tsiolkovsky code removed from our codebase. | Post-Phase 5 (depends on maintainer) |
+| M1: kRPC telemetry works | `KRPCClient.get_state()` returns valid data, FlightDirector processes it, web UI displays it. All existing tests pass. | ✓ DONE |
+| M2: Vehicle auto-detected | Perseus 1 auto-detected correctly from kRPC parts. `VehicleProfile` converts to `VehicleConfig`. Detected values match known Perseus 1 stats within 5%. | End of Phase 2.4 |
+| M3: Nominal from any vehicle | `run_ascent()` handles N-stage vehicles. Nominal trajectory generated from detected vehicle + user-provided `MissionPlan`. Perseus 1 results unchanged. | End of Phase 2.6 |
+| M4: Flight director generalized | `FlightDirectorConfig.from_nominal()` produces correct phase boundaries for Perseus 1 and at least one non-Perseus vehicle (e.g., Kerbal X). No hardcoded Perseus thresholds remain. | End of Phase 3 |
+| M5: UI works for any vehicle | Mission plan panel accepts target orbit. Stage labels, fuel bars, gate names reflect detected vehicle. "Compute Nominal" re-runs pipeline. No Perseus 1-specific text when flying another vehicle. | End of Phase 4 |
+| M6: kRPC issue commented | Design proposal posted on issue #336 with DeltaVStageInfo approach. Maintainer feedback requested. | ✓ DONE |
+| M7: kRPC PR submitted | PR opened against `krpc/krpc` with Stage.cs, Vessel.Stages, tests, CHANGES.txt. | End of Phase 5 |
+| M8: kRPC PR merged + integrated | Native stage API available in released kRPC; manual Tsiolkovsky code removed from our codebase. | Post-Phase 5 (depends on maintainer) |
 
 ---
 
 ## What Stays Unchanged
 
-- **Python simulation package** (`sim/`): entirely independent of telemetry source
+- **Sim physics engine** (`sim/atmosphere.py`, `sim/trajectory.py` integrator): Kerbin atmosphere model, gravity, drag — all preserved. Only the staging model and entry points are generalized.
 - **SVG diagram system** (`diagrams/`): no telemetry dependency
 - **SimulatedTelemetry / ScriptedTelemetry**: still used for offline dev/demo
 - **Web UI structure**: same HTML/CSS/JS, only label text and config loading change
 - **Socket.IO protocol**: same events (`telemetry`, `director`, `nominal`)
 - **Test infrastructure**: pytest, conftest.py, Playwright — all preserved
 - **Scenario system**: `LaunchScenario` + `ScriptedTelemetry` still works for replay
+- **Perseus 1 as default**: `VehicleConfig()` with no args still produces Perseus 1. All existing tests pass with no changes to expected values.
 
 ---
 
@@ -1008,7 +1293,21 @@ The comparison touted maneuver node access as a kRPC advantage, but no phase
 uses it.
 
 *Resolution:* Maneuver node access is a future enhancement, not a Phase 1–4
-requirement. Add to "Future Work" section. Not blocking. **Status: Accepted.**
+requirement. The `MissionPlan` dataclass (Phase 2.3) gives the user explicit
+control over target orbit instead. Maneuver node integration deferred to
+Future Work. **Status: Accepted.**
+
+**Finding RT-6b: Sim generalization (Task 2.5) is high-risk.**
+Generalizing `run_ascent()` from 2-stage to N-stage touches the core physics
+integrator. A regression here invalidates all verified numbers (the entire
+"Current verified numbers" table in CLAUDE.md).
+
+*Resolution:* The physics integrator itself (Euler step, atmosphere model,
+gravity, drag) is NOT modified — only the staging logic and phase labels
+change. Acceptance criterion: `VehicleConfig()` with no args through the
+generalized path must produce results identical to the current path (not
+"within 5%" — identical). The existing 325+ non-browser tests enforce this.
+**Status: Mitigated by test coverage.**
 
 **Finding RT-7: `compute_downrange_km()` is shared between TelematicusClient
 and KRPCClient.**
@@ -1042,12 +1341,21 @@ steps and `server.py --krpc-host` usage. Part of Phase 1 documentation. **Status
 
 ## Future Work (Post-COA C)
 
+- **3D trajectory modeling:** Full inclination-aware sim with launch heading
+  computation, cosine loss for non-equatorial orbits, and heading advisories.
+  Required for accurate polar orbit mission plans.
+- **Mission phases beyond ascent:** Extend `MissionPlan` to cover orbit
+  operations — TMI burn, course corrections, Mun encounter. Each phase would
+  have its own nominal and FlightDirector thresholds.
 - **Maneuver node display:** Read planned burns from kRPC, show projected
   trajectory on the globe view and calculate remaining ΔV for TMI.
 - **Autopilot hooks:** kRPC has full vessel control — could implement
   automated pitch programs or auto-circularization as an advanced feature.
 - **Multi-vessel tracking:** kRPC can enumerate all vessels — potential for
   tracking debris, spent stages, or transfer vehicles.
+- **Optimal ascent computation:** Given a vehicle's TWR profile, compute
+  a near-optimal pitch program via numerical optimization rather than
+  selecting from templates. Significant research problem.
 - **kRPC WebSocket transport:** kRPC supports WebSocket connections, which
   could allow the browser to connect directly to KSP (eliminating the Python
   server for a read-only UI). This would be a separate COA evaluation.
