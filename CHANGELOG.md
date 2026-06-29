@@ -3,6 +3,12 @@
 ## [Unreleased]
 
 ### Added
+- **KSP parts database** (`sim/parts_db.py`): 341-part database parsed from KSP wiki CSV with typed frozen dataclasses (`Engine`, `FuelTank`, `StructuralPart`). Wiki-verified ISP supplements for all 29 stock engines and SRB mass corrections. Lookup by normalized key, display name, or legacy alias (`db.get_engine("swivel")`).
+- **Generic N-stage vehicle model** (`sim/generic_vehicle.py`): `StageDefinition` and `GenericVehicle` dataclasses supporting arbitrary stage counts, parallel boosters, mixed engine types, and per-stage throttle limits. Computed properties: `liftoff_mass()`, `stage_dv_vac()`, `pad_twr_asl()`. Factory method `GenericVehicle.from_perseus1()` for backward-compatibility verification. JSON serialization via `to_dict()`/`from_dict()` and `validate()` against the parts database.
+- **N-stage trajectory integrator** (`trajectory.py:integrate_generic()`): Data-driven staging engine alongside existing `integrate()`. Handles parallel boosters, sequential staging, and final-stage orbit insertion (burn → coast-to-apoapsis → circularize). New `engine_thrust_at_generic()` helper operates on `Engine` dataclass instead of constants dict keys.
+- **`run_generic()` API** (`sim/ascent_sim.py`): High-level entry point for generic vehicle trajectories, parallel to existing `run_ascent()`.
+- **`staging_events` field on `TrajectoryResult`**: List of `SeparationEvent` objects populated by `integrate_generic()` (backward-compatible default: empty list).
+- **57 new tests**: 26 parts database tests (`test_parts_db.py`) and 31 generic vehicle + trajectory tests (`test_generic_vehicle.py`) covering mass accounting, dV calculations, staging events, orbit insertion, validation, serialization, and multiple vehicle configurations.
 - **Booster SEP confirmation gate** (UX-FC01a): New go/no-go gate for SRB separation. GO when alt >1.5 km and vel >150 m/s at sep; MARGINAL for early sep; NOT-YET before burnout. Gate count now 5 (was 4).
 - **Nominal pitch reference in advisories** (UX-FC01b): Pitch correction advisories now include the nominal pitch value (e.g., "PITCH TOWARD HORIZON (+22° STEEP, NOM 45°)") so operators can see the delta and target.
 - **Consumables trending** (UX-P3-11): FlightDirector output includes `consumables.burn_rate` (units/s, EMA-smoothed) and `consumables.time_to_depletion` (seconds). Frontend displays burn rate and TTD below fuel bars when burning.
