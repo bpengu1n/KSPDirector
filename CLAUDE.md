@@ -20,9 +20,9 @@ A fan-made **Kerbal Space Program 1** mission pack for **Perseus 1**: a stock
    Telemachus telemetry and serves a web-based flight director UI with
    scenario replay, ballistic projection, and second-screen support.
 
-KSP version: **KSP 1 stock** (no mods affecting physics). The Telemachus plugin
-is used for telemetry; it is NOT required to run the sim or mission control in
-simulation mode.
+KSP version: **KSP 1 stock** (no mods affecting physics). Telemetry via
+Telemachus (WebSocket) or kRPC (protobuf/TCP); neither is required to run
+the sim or mission control in simulation mode.
 
 **All Python commands below run from `code/` as the working directory.**
 
@@ -43,6 +43,7 @@ code/                          (root — was percy_project_fixed/ in outputs)
 ├── mission_control/
 │   ├── nominal_compare.py     Flight director: phase detection, go/no-go gates, advisories
 │   ├── telemachus_client.py   Telemachus WS client + SimulatedTelemetry fallback
+│   ├── krpc_client.py         kRPC telemetry client (drop-in for TelematicusClient)
 │   ├── server.py              Flask + Socket.IO backend
 │   └── static/index.html      Complete mission control web UI (single file)
 │
@@ -61,6 +62,7 @@ code/                          (root — was percy_project_fixed/ in outputs)
 │   ├── test_ballistic_projection.py  33 tests — ballistic projection + drag
 │   ├── test_scenario.py           188 tests — scenario system + integration
 │   ├── test_ux_review.py          53 tests — UX survey review implementations
+│   ├── test_krpc_client.py         31 tests — kRPC client mock tests
 │   ├── test_ui_playwright.py     229 tests — DOM-based UI tests (headless Chromium)
 │   ├── test_visual_playwright.py  61 tests — visual regression tests (headless Chromium)
 │   └── test_isolation.py           3 tests — meta-test for order independence
@@ -95,10 +97,11 @@ python -m sim.ascent_sim --json | python -m json.tool       # JSON output
 # --- Mission control ---
 python mission_control/server.py                            # simulation mode → http://localhost:5000/
 python mission_control/server.py --ksp-host 192.168.1.X     # live KSP with Telemachus
+python mission_control/server.py --krpc-host 192.168.1.X    # live KSP with kRPC
 python mission_control/server.py --scenario steep_ascent    # start with a preset scenario
 
 # --- Tests (pytest) ---
-python -m pytest tests/ -v                                  # full suite (616 collected; 323 non-browser pass)
+python -m pytest tests/ -v                                  # full suite (647 collected; 356 non-browser pass)
 python -m pytest tests/test_p0_regressions.py -v            # single test file
 python -m pytest tests/test_p0_regressions.py::TestP001 -v  # single test class
 python -m pytest tests/test_p0_regressions.py::TestP001::test_p001_fl_t800_fuel -v  # single test
@@ -148,7 +151,7 @@ If you change any part mass or engine stat, re-run and update this table.
 | Target orbit | 80 × 80 km | design |
 | Orbital speed @80km | 2,279 m/s | derived |
 | TMI ΔV | ~856 m/s | design |
-| Test suite | **616 collected (323 pass, 293 require browser)** | pytest |
+| Test suite | **647 collected (356 pass, 293 require browser)** | pytest |
 
 ---
 
@@ -305,28 +308,40 @@ for rate-of-change alerting. `FlightDirector.update()` does this automatically.
 
 ---
 
-## Telemachus / mission control
+## Telemetry sources
+
+Three telemetry backends, all producing the same `get_state()` dict:
 
 ```python
-# Live KSP
+# Option 1: Live KSP via Telemachus (WebSocket)
 from mission_control.telemachus_client import TelematicusClient
 client = TelematicusClient(host='192.168.1.X', port=8085, rate_ms=200)
+
+# Option 2: Live KSP via kRPC (protobuf/TCP)
+from mission_control.krpc_client import KRPCClient
+client = KRPCClient(host='192.168.1.X', rpc_port=50000, stream_port=50001)
+
+# Option 3: Simulation mode (no KSP)
+from mission_control.telemachus_client import SimulatedTelemetry
+client = SimulatedTelemetry(rate_ms=200)
+
+# All three share the same interface:
 client.start()
 state = client.get_state()  # returns dict with: altitude, apoapsis, periapsis,
                              # velocity, v_vert, v_horiz, pitch, heading, roll,
                              # mission_time, throttle, liquid_fuel, solid_fuel, ...
 traj  = client.get_trajectory()  # list of {t, altitude_km, downrange_km, ...}
-
-# Simulation mode (no KSP)
-from mission_control.telemachus_client import SimulatedTelemetry
-client = SimulatedTelemetry(rate_ms=200)
-client.start()
 ```
 
-Telemachus WebSocket: `ws://[host]:8085/datalink`
+**Telemachus** WebSocket: `ws://[host]:8085/datalink`
 Subscription format: `{"rate": 200, "+": ["v.altitude", "o.ApA", ...]}`
 Topic list: see `SUBSCRIBED_TOPICS` in telemachus_client.py — adjust if your
 plugin version uses different names.
+
+**kRPC** uses push-based streams for high-frequency data (position, velocity,
+attitude) and direct RPC for low-frequency queries (resources, parts).
+Requires `pip install krpc`. kRPC's `flight.pitch` is degrees from horizon
+(-90 to +90), same convention as Telemachus `n.pitch`.
 
 **Downrange computation** uses `compute_downrange_km(lon_delta_deg, lat_deg)` —
 Kerbin-correct (10.47 km/deg × cos(lat)), NOT Earth scale (P0-03 fix). Launch
@@ -390,7 +405,9 @@ tests/test_ui_playwright.py       229 tests  — DOM-based UI tests (headless Ch
 tests/test_visual_playwright.py    61 tests  — visual regression tests (headless Chromium)
 tests/test_isolation.py             3 tests  — meta-test for order independence
 ─────────────────────────────────────────────────────
-Total                             616 collected  (323 pass, 293 require browser)
+tests/test_krpc_client.py          31 tests  — kRPC client mock tests
+─────────────────────────────────────────────────────
+Total                             647 collected  (356 pass, 293 require browser)
 ```
 
 **Before making any change**: run `python -m pytest tests/ -v` and confirm green.

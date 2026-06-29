@@ -9,6 +9,10 @@ simple-websocket>=1.0     # WebSocket transport for threading mode
 # Telemachus WebSocket client
 websocket-client>=1.7
 
+# kRPC telemetry client (optional — only needed for --krpc-host mode)
+# pip install krpc
+# krpc>=0.5.2
+
 # Simulation utilities (all stdlib except below)
 # No additional dependencies for sim/ — pure Python 3.12+
 
