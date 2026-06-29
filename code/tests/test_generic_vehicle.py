@@ -252,6 +252,129 @@ class TestGenericTrajectory:
         assert result.apoapsis_km > 70
 
 
+class TestOrbitInsertion:
+    def test_perseus1_upper_is_oi(self, db):
+        v = GenericVehicle.from_perseus1()
+        assert v.stages[2].orbit_insertion is True
+        assert v.orbit_insertion_idx() == 2
+
+    def test_default_is_last_stage(self, db):
+        v = GenericVehicle(
+            name="No OI flag",
+            stages=[
+                StageDefinition(name="Core", engine_key="swivel", tank_key="flt800"),
+                StageDefinition(name="Upper", engine_key="terrier", tank_key="flt400"),
+            ],
+            payload_keys=["mk1_pod"],
+        )
+        assert v.orbit_insertion_idx() == 1
+
+    def test_post_orbit_stage_inert(self, db):
+        v = GenericVehicle.from_perseus1()
+        v.stages.append(
+            StageDefinition(name="TMI", engine_key="terrier", tank_key="flt400"),
+        )
+        result = run_generic(v, db)
+        # TMI stage should never activate or separate
+        assert len(result.staging_events) == 2  # boosters + core only
+        phases = {p.phase for p in result.points}
+        assert "TMI" not in phases
+
+    def test_post_orbit_mass_counted(self, db):
+        base = GenericVehicle(
+            name="No TMI",
+            stages=[
+                StageDefinition(name="Core", engine_key="swivel", tank_key="flt800"),
+                StageDefinition(
+                    name="Upper", engine_key="terrier", tank_key="flt400",
+                    orbit_insertion=True,
+                ),
+            ],
+            payload_keys=["mk1_pod"],
+        )
+        with_tmi = GenericVehicle(
+            name="With TMI",
+            stages=[
+                StageDefinition(name="Core", engine_key="swivel", tank_key="flt800"),
+                StageDefinition(
+                    name="Upper", engine_key="terrier", tank_key="flt400",
+                    orbit_insertion=True,
+                ),
+                StageDefinition(name="TMI", engine_key="terrier", tank_key="flt400"),
+            ],
+            payload_keys=["mk1_pod"],
+        )
+        assert with_tmi.liftoff_mass(db) > base.liftoff_mass(db)
+
+    def test_serialization_roundtrip(self, db):
+        v = GenericVehicle(
+            name="OI test",
+            stages=[
+                StageDefinition(name="Core", engine_key="swivel", tank_key="flt800"),
+                StageDefinition(
+                    name="Upper", engine_key="terrier", tank_key="flt400",
+                    orbit_insertion=True,
+                ),
+                StageDefinition(name="TMI", engine_key="terrier", tank_key="flt200"),
+            ],
+            payload_keys=["mk1_pod"],
+        )
+        d = v.to_dict()
+        assert d["stages"][1]["orbit_insertion"] is True
+        assert d["stages"][2]["orbit_insertion"] is False
+        v2 = GenericVehicle.from_dict(d)
+        assert v2.orbit_insertion_idx() == 1
+
+    def test_validate_multiple_oi_flags(self, db):
+        v = GenericVehicle(
+            name="Bad",
+            stages=[
+                StageDefinition(
+                    name="S1", engine_key="swivel", tank_key="flt800",
+                    orbit_insertion=True,
+                ),
+                StageDefinition(
+                    name="S2", engine_key="terrier", tank_key="flt400",
+                    orbit_insertion=True,
+                ),
+            ],
+            payload_keys=["mk1_pod"],
+        )
+        errs = v.validate(db)
+        assert any("at most one" in e.lower() for e in errs)
+
+    def test_validate_parallel_oi(self, db):
+        v = GenericVehicle(
+            name="Bad",
+            stages=[
+                StageDefinition(
+                    name="Boosters", engine_key="hammer", parallel=True,
+                    orbit_insertion=True,
+                ),
+                StageDefinition(name="Core", engine_key="swivel", tank_key="flt800"),
+            ],
+        )
+        errs = v.validate(db)
+        assert any("parallel" in e.lower() for e in errs)
+
+    def test_orbit_insertion_is_used_for_circularize(self, db):
+        v = GenericVehicle(
+            name="OI middle stage",
+            stages=[
+                StageDefinition(name="Core", engine_key="swivel", tank_key="flt800"),
+                StageDefinition(
+                    name="Upper", engine_key="terrier", tank_key="flt800",
+                    orbit_insertion=True,
+                ),
+                StageDefinition(name="TMI", engine_key="terrier", tank_key="flt400"),
+            ],
+            payload_keys=["mk1_pod"],
+        )
+        result = run_generic(v, db)
+        phases = {p.phase for p in result.points}
+        assert "ORBIT" in phases or "COAST_APO" in phases or "CIRCULARIZE" in phases
+
+
 class TestPublicAPI:
     def test_imports(self):
         from sim import (

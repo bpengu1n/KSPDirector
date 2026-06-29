@@ -489,14 +489,15 @@ def integrate_generic(
     """Run an N-stage ascent trajectory simulation.
 
     Works with any GenericVehicle definition.  Parallel stages fire alongside
-    the first sequential stage; the last stage handles orbit insertion with
-    the same burn-coast-circularize state machine as the Perseus 1 integrator.
+    the first sequential stage.  The stage marked ``orbit_insertion=True``
+    (or the last stage if none is marked) gets the burn-coast-circularize
+    state machine.  Stages after the orbit-insertion stage are inert mass.
     """
     cda = vehicle.cd * vehicle.area_base
     target_apo_m = target_orbit_km * 1000.0
     target_pe_m = (target_orbit_km - 5.0) * 1000.0
     n_stages = len(vehicle.stages)
-    last_stage_idx = n_stages - 1
+    oi_idx = vehicle.orbit_insertion_idx()
 
     # Build per-stage runtime state
     stage_dry_kg = [vehicle.stage_dry_mass(i, db) * 1000 for i in range(n_stages)]
@@ -512,7 +513,10 @@ def integrate_generic(
         })
 
     # Activate initial stages: all leading parallel stages + first non-parallel
+    # Never activate stages beyond the orbit-insertion stage
     for i, stage in enumerate(vehicle.stages):
+        if i > oi_idx:
+            break
         stage_states[i]["active"] = True
         if not stage.parallel:
             break
@@ -527,7 +531,7 @@ def integrate_generic(
 
     # Final-stage orbit insertion state machine
     # None until the last stage activates, then BURN → COAST_APO → CIRCULARIZE → ORBIT
-    final_mode = "BURN" if stage_states[last_stage_idx]["active"] else None
+    final_mode = "BURN" if stage_states[oi_idx]["active"] else None
 
     free_turn = False
     step = 0
@@ -543,7 +547,7 @@ def integrate_generic(
     def _phase_label():
         if final_mode is not None:
             if final_mode == "BURN":
-                return vehicle.stages[last_stage_idx].name.upper()
+                return vehicle.stages[oi_idx].name.upper()
             return final_mode
         for i in reversed(range(n_stages)):
             if stage_states[i]["active"] and not stage_states[i]["separated"]:
@@ -573,7 +577,7 @@ def integrate_generic(
         per_stage_mdot: dict[int, float] = {}
 
         if final_mode not in ("COAST_APO", "ORBIT", "COAST"):
-            for i in range(n_stages):
+            for i in range(oi_idx + 1):
                 st = stage_states[i]
                 if st["active"] and not st["separated"] and st["prop"] > 0:
                     eng = stage_engines[i]
@@ -643,8 +647,8 @@ def integrate_generic(
             stage_states[i]["prop"] -= dm
             mass -= dm
 
-        # --- Staging: check for burnout ---
-        for i in range(n_stages):
+        # --- Staging: check for burnout (ascent stages only) ---
+        for i in range(oi_idx + 1):
             st = stage_states[i]
             stage = vehicle.stages[i]
             if not st["active"] or st["separated"] or st["prop"] > 0:
@@ -652,7 +656,7 @@ def integrate_generic(
 
             st["prop"] = 0.0
 
-            if i == last_stage_idx:
+            if i == oi_idx:
                 # Last stage: mode transition, no separation
                 if final_mode == "BURN":
                     final_mode = "COAST_APO"
@@ -673,16 +677,16 @@ def integrate_generic(
             ))
 
             if not stage.parallel:
-                for j in range(i + 1, n_stages):
+                for j in range(i + 1, oi_idx + 1):
                     if not stage_states[j]["separated"]:
                         stage_states[j]["active"] = True
-                        if j == last_stage_idx:
+                        if j == oi_idx:
                             final_mode = "BURN"
                         if not vehicle.stages[j].parallel:
                             break
 
         # --- Final-stage phase transitions ---
-        if final_mode == "BURN" and stage_states[last_stage_idx]["prop"] > 0:
+        if final_mode == "BURN" and stage_states[oi_idx]["prop"] > 0:
             ap_now = orbital_params(h, v, gamma)[0]
             if ap_now >= target_orbit_km:
                 final_mode = "COAST_APO"
@@ -691,11 +695,11 @@ def integrate_generic(
             v_v = v * math.sin(gamma)
             if prev_v_vert is not None and prev_v_vert > 0 and v_v <= 0:
                 final_mode = ("CIRCULARIZE"
-                              if stage_states[last_stage_idx]["prop"] > 0
+                              if stage_states[oi_idx]["prop"] > 0
                               else "COAST")
             prev_v_vert = v_v
 
-        if final_mode == "CIRCULARIZE" and stage_states[last_stage_idx]["prop"] > 0:
+        if final_mode == "CIRCULARIZE" and stage_states[oi_idx]["prop"] > 0:
             pe_now = orbital_params(h, v, gamma)[1]
             if pe_now >= target_orbit_km - 5.0:
                 final_mode = "ORBIT"

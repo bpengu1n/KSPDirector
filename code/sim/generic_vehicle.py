@@ -45,6 +45,12 @@ class StageDefinition:
     Parallel stages (``parallel=True``) fire simultaneously with the first
     sequential (non-parallel) stage.  When they burn out they separate without
     advancing the staging sequence.
+
+    Set ``orbit_insertion=True`` on the stage responsible for achieving orbit.
+    That stage gets the burn-coast-circularize state machine.  Any stages
+    defined after the orbit-insertion stage are treated as inert mass during
+    ascent (never activated, never separated).  If no stage is marked, the
+    last stage is used (backward-compatible default).
     """
     name: str
     engine_key: str
@@ -53,6 +59,7 @@ class StageDefinition:
     tank_key: Optional[str] = None
     tank_count: int = 1
     parallel: bool = False
+    orbit_insertion: bool = False
     jettison_keys: list[str] = field(default_factory=list)
     passive_keys: list[str] = field(default_factory=list)
     extra_mass_t: float = 0.0
@@ -146,6 +153,13 @@ class GenericVehicle:
             return 0.0
         return thrust_kn / weight_kn
 
+    def orbit_insertion_idx(self) -> int:
+        """Index of the orbit-insertion stage (first with flag, else last)."""
+        for i, s in enumerate(self.stages):
+            if s.orbit_insertion:
+                return i
+        return len(self.stages) - 1
+
     # --- Factory ---
 
     @classmethod
@@ -188,6 +202,7 @@ class GenericVehicle:
             throttle_pct=100.0,
             tank_key="flt800",
             tank_count=1,
+            orbit_insertion=True,
             jettison_keys=["tr18a_decoupler"],
         ))
 
@@ -216,6 +231,7 @@ class GenericVehicle:
                     "tank_key": s.tank_key,
                     "tank_count": s.tank_count,
                     "parallel": s.parallel,
+                    "orbit_insertion": s.orbit_insertion,
                     "jettison_keys": list(s.jettison_keys),
                     "passive_keys": list(s.passive_keys),
                     "extra_mass_t": s.extra_mass_t,
@@ -239,6 +255,7 @@ class GenericVehicle:
                 tank_key=sd.get("tank_key"),
                 tank_count=sd.get("tank_count", 1),
                 parallel=sd.get("parallel", False),
+                orbit_insertion=sd.get("orbit_insertion", False),
                 jettison_keys=sd.get("jettison_keys", []),
                 passive_keys=sd.get("passive_keys", []),
                 extra_mass_t=sd.get("extra_mass_t", 0.0),
@@ -258,6 +275,16 @@ class GenericVehicle:
         if not self.stages:
             errors.append("Vehicle must have at least one stage")
             return errors
+
+        oi_count = sum(1 for s in self.stages if s.orbit_insertion)
+        if oi_count > 1:
+            errors.append("At most one stage may have orbit_insertion=True")
+        oi_idx = self.orbit_insertion_idx()
+        if self.stages[oi_idx].parallel:
+            errors.append(
+                f"Stage {oi_idx} ({self.stages[oi_idx].name}): "
+                "orbit_insertion stage must not be parallel"
+            )
 
         for key in self.payload_keys:
             try:
