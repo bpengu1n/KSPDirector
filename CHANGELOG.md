@@ -3,6 +3,11 @@
 ## [Unreleased]
 
 ### Added
+- **kRPC telemetry client** (`mission_control/krpc_client.py`): Drop-in replacement for TelematicusClient using kRPC streams. Produces identical `get_state()` / `get_trajectory()` dict format so FlightDirector, server broadcast loop, and web UI work unchanged. Supports kRPC push-based streams for high-frequency data and direct RPC for resources/parts.
+- **`--krpc-host` server flag**: New CLI option to connect via kRPC instead of Telemachus. Also supports `--krpc-rpc-port` and `--krpc-stream-port` for non-default ports.
+- **31 kRPC client tests** (`tests/test_krpc_client.py`): Interface compatibility, state reading, trajectory accumulation, downrange computation, connection lifecycle, callback handling, thread safety, and FlightDirector integration.
+
+### Added (previous)
 - **Booster SEP confirmation gate** (UX-FC01a): New go/no-go gate for SRB separation. GO when alt >1.5 km and vel >150 m/s at sep; MARGINAL for early sep; NOT-YET before burnout. Gate count now 5 (was 4).
 - **Nominal pitch reference in advisories** (UX-FC01b): Pitch correction advisories now include the nominal pitch value (e.g., "PITCH TOWARD HORIZON (+22° STEEP, NOM 45°)") so operators can see the delta and target.
 - **Consumables trending** (UX-P3-11): FlightDirector output includes `consumables.burn_rate` (units/s, EMA-smoothed) and `consumables.time_to_depletion` (seconds). Frontend displays burn rate and TTD below fuel bars when burning.

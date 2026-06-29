@@ -50,6 +50,7 @@ from flask import Flask, render_template_string, jsonify, send_from_directory, r
 from flask_socketio import SocketIO, emit
 
 from mission_control.telemachus_client import TelematicusClient, SimulatedTelemetry, ScriptedTelemetry
+from mission_control.krpc_client import KRPCClient
 from mission_control.nominal_compare import NominalTrajectory, FlightDirector
 from mission_control.scenario import LaunchScenario, PRESET_SCENARIOS
 from sim.constants import R_KERBIN, MU_KERBIN, ATM_CEIL, RHO0, SCALE_H, PERSEUS_1_DEFAULT
@@ -409,9 +410,15 @@ def build_argparser() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("--ksp-host", default=None, metavar="IP",
-                   help="KSP machine IP. If not set, runs in simulation mode.")
+                   help="KSP machine IP (Telemachus). If not set, runs in simulation mode.")
     p.add_argument("--ksp-port", type=int, default=8085,
                    help="Telemachus WebSocket port")
+    p.add_argument("--krpc-host", default=None, metavar="IP",
+                   help="KSP machine IP (kRPC). Overrides --ksp-host if both given.")
+    p.add_argument("--krpc-rpc-port", type=int, default=50000,
+                   help="kRPC RPC port")
+    p.add_argument("--krpc-stream-port", type=int, default=50001,
+                   help="kRPC stream port")
     p.add_argument("--rate", type=int, default=200,
                    help="Telemetry update rate (ms)")
     p.add_argument("--port", type=int, default=5000,
@@ -466,6 +473,15 @@ def main(argv=None):
         scripted.load_scenario(scenario)
         session.telemetry_client = scripted
         session.current_scenario = scenario
+    elif args.krpc_host:
+        logger.info("Connecting to KSP/kRPC at %s:%d …",
+                     args.krpc_host, args.krpc_rpc_port)
+        session.telemetry_client = KRPCClient(
+            host=args.krpc_host,
+            rpc_port=args.krpc_rpc_port,
+            stream_port=args.krpc_stream_port,
+            rate_hz=args.emit_rate,
+        )
     elif args.ksp_host:
         logger.info("Connecting to KSP/Telemachus at %s:%d …",
                      args.ksp_host, args.ksp_port)
@@ -480,7 +496,12 @@ def main(argv=None):
 
     socketio.start_background_task(broadcast_loop)
 
-    mode = "SIMULATION" if args.ksp_host is None else f"LIVE ({args.ksp_host})"
+    if args.krpc_host:
+        mode = f"LIVE/kRPC ({args.krpc_host})"
+    elif args.ksp_host:
+        mode = f"LIVE/Telemachus ({args.ksp_host})"
+    else:
+        mode = "SIMULATION"
     logger.info("Perseus 1 Mission Control — %s — http://localhost:%d/",
                 mode, args.port)
 

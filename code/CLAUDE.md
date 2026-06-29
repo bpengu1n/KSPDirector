@@ -17,11 +17,11 @@ A fan-made **Kerbal Space Program 1** mission pack for **Perseus 1**: a stock
 2. **NASA-style documentation** — four SVG technical reference sheets in a
    consistent design system, plus a build plan / flight procedures document.
 3. **Real-time Mission Control** — Flask + Socket.IO server that ingests
-   Telemachus telemetry and serves a web-based flight director UI.
+   Telemachus or kRPC telemetry and serves a web-based flight director UI.
 
-KSP version: **KSP 1 stock** (no mods affecting physics). The Telemachus plugin
-is used for telemetry; it is NOT required to run the sim or mission control in
-simulation mode.
+KSP version: **KSP 1 stock** (no mods affecting physics). Telemetry via
+Telemachus (WebSocket) or kRPC (protobuf/TCP); neither is required to run
+the sim or mission control in simulation mode.
 
 ---
 
@@ -140,7 +140,7 @@ If you change any part mass or engine stat, re-run and update this table.
 | Target orbit | 80 × 80 km | design |
 | Orbital speed @80km | 2,279 m/s | derived |
 | TMI ΔV | ~856 m/s | design |
-| Test suite | **503 collected (270 pass, 233 require browser)** | pytest |
+| Test suite | **534 collected (301 pass, 233 require browser)** | pytest |
 
 ---
 
@@ -507,7 +507,7 @@ The module-level `__getattr__` provides backward-compatible reads.
 ### Test suite
 
 ```bash
-# Full suite: 503 collected (270 pass, 233 require browser)
+# Full suite: 534 collected (301 pass, 233 require browser)
 cd /home/user/KSPDirector/code
 python -m pytest tests/ -v
 
