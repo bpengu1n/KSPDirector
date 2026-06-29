@@ -1,8 +1,8 @@
-# CLAUDE.md — Perseus 1 KSP Mission Pack
+# CLAUDE.md
 
-This file gives Claude Code the full context needed to continue development
-without re-deriving things that are already settled. Read it fully before
-touching any code. Key settled decisions are marked **DO NOT REOPEN** — they
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+Key settled decisions are marked **DO NOT REOPEN** — they
 have engineering rationale behind them and reopening them wastes iteration time.
 
 ---
@@ -10,18 +10,21 @@ have engineering rationale behind them and reopening them wastes iteration time.
 ## What this project is
 
 A fan-made **Kerbal Space Program 1** mission pack for **Perseus 1**: a stock
-1.25 m crewed Mun free-return flyby vehicle. Two parallel tracks:
+1.25 m crewed Mun free-return flyby vehicle. Three parallel tracks:
 
 1. **Physics-grounded simulation** — pure Python ascent trajectory simulator
    that produces verified numbers matching in-game behaviour.
 2. **NASA-style documentation** — four SVG technical reference sheets in a
    consistent design system, plus a build plan / flight procedures document.
 3. **Real-time Mission Control** — Flask + Socket.IO server that ingests
-   Telemachus telemetry and serves a web-based flight director UI.
+   Telemachus telemetry and serves a web-based flight director UI with
+   scenario replay, ballistic projection, and second-screen support.
 
 KSP version: **KSP 1 stock** (no mods affecting physics). The Telemachus plugin
 is used for telemetry; it is NOT required to run the sim or mission control in
 simulation mode.
+
+**All Python commands below run from `code/` as the working directory.**
 
 ---
 
@@ -50,9 +53,17 @@ code/                          (root — was percy_project_fixed/ in outputs)
 │   └── generate_diagrams.py   Consolidated single-file generator
 │
 ├── tests/
-│   ├── test_p0_regressions.py  17 tests — critical bug regressions
-│   ├── test_p1_regressions.py  11 tests — high-priority issue regressions
-│   └── test_p2_p3_regressions.py  21 tests — medium/low priority regressions
+│   ├── conftest.py                Shared pytest fixtures (project_root, vehicle_config, etc.)
+│   ├── playwright_helpers.py      Shared Playwright test helpers (RESET_JS)
+│   ├── test_p0_regressions.py     17 tests — P0 critical bug regressions
+│   ├── test_p1_regressions.py     11 tests — P1 high-priority regressions
+│   ├── test_p2_p3_regressions.py  21 tests — P2/P3 medium/low regressions
+│   ├── test_ballistic_projection.py  33 tests — ballistic projection + drag
+│   ├── test_scenario.py           188 tests — scenario system + integration
+│   ├── test_ux_review.py          53 tests — UX survey review implementations
+│   ├── test_ui_playwright.py     229 tests — DOM-based UI tests (headless Chromium)
+│   ├── test_visual_playwright.py  61 tests — visual regression tests (headless Chromium)
+│   └── test_isolation.py           3 tests — meta-test for order independence
 │
 ├── tools/
 │   └── update_sheet3_trajectory.py   Regenerates TRAJECTORY constant in sheet3.py
@@ -62,7 +73,7 @@ code/                          (root — was percy_project_fixed/ in outputs)
 │   ├── SIM_API.md             Full simulation API reference
 │   └── MISSION_CONTROL.md     Server setup, Telemachus, Houston UI integration
 │
-└── requirements.txt           flask, flask-socketio, eventlet, websocket-client
+└── requirements.txt           flask, flask-socketio, simple-websocket, websocket-client
 ```
 
 Also present at the package root (outside `code/`):
@@ -76,35 +87,42 @@ Also present at the package root (outside `code/`):
 ## Running things
 
 ```bash
-# Simulation (default: 2× Hammer @20%, nominal pitch program)
-python -m sim.ascent_sim
-
-# Compare pitch programs
+# --- Simulation ---
+python -m sim.ascent_sim                                    # default: 2× Hammer @20%
 python -m sim.ascent_sim --compare nominal steep shallow late_turn
+python -m sim.ascent_sim --json | python -m json.tool       # JSON output
 
-# JSON output (pipe into other tools)
-python -m sim.ascent_sim --json | python -m json.tool
+# --- Mission control ---
+python mission_control/server.py                            # simulation mode → http://localhost:5000/
+python mission_control/server.py --ksp-host 192.168.1.X     # live KSP with Telemachus
+python mission_control/server.py --scenario steep_ascent    # start with a preset scenario
 
-# Mission control — simulation mode (no KSP needed)
-python mission_control/server.py
-# → open http://localhost:5000/
+# --- Tests (pytest) ---
+python -m pytest tests/ -v                                  # full suite (616 collected; 323 non-browser pass)
+python -m pytest tests/test_p0_regressions.py -v            # single test file
+python -m pytest tests/test_p0_regressions.py::TestP001 -v  # single test class
+python -m pytest tests/test_p0_regressions.py::TestP001::test_p001_fl_t800_fuel -v  # single test
+python -m pytest tests/ -k "pitch"                          # run tests matching keyword
 
-# Mission control — live KSP with Telemachus
-python mission_control/server.py --ksp-host 192.168.1.X
+# CI-equivalent (no browser required):
+python -m pytest tests/ -v --ignore=tests/test_ui_playwright.py \
+    --ignore=tests/test_visual_playwright.py --ignore=tests/test_isolation.py
 
-# Full regression suite (must be green before committing any change)
-python -m unittest tests.test_p0_regressions \
-                   tests.test_p1_regressions \
-                   tests.test_p2_p3_regressions -v
+# With coverage:
+python -m pytest tests/ --cov=sim --cov=mission_control --cov-report=term-missing
 
-# Regenerate technical diagrams (run from nasa_dev/ or diagrams/)
-python generate_diagrams.py   # or generate_all.py
-# Validate SVG output
+# --- Diagrams ---
+python diagrams/generate_diagrams.py                        # regenerate SVGs
 python -c "import xml.dom.minidom as m; m.parse('sheet3.svg'); print('valid')"
 
 # Update sheet3 trajectory data from current sim
 python tools/update_sheet3_trajectory.py
 ```
+
+Test framework: **pytest** with shared fixtures in `conftest.py`. Uses
+`pytest.mark.parametrize` for data-driven tests and `pytest.approx()` for
+float comparisons. Playwright tests require headless Chromium and are excluded
+from CI. Install test deps: `pip install pytest pytest-randomly pytest-reverse`.
 
 ---
 
@@ -130,7 +148,7 @@ If you change any part mass or engine stat, re-run and update this table.
 | Target orbit | 80 × 80 km | design |
 | Orbital speed @80km | 2,279 m/s | derived |
 | TMI ΔV | ~856 m/s | design |
-| Test suite | **49/49 green** | last run |
+| Test suite | **616 collected (323 pass, 293 require browser)** | pytest |
 
 ---
 
@@ -362,14 +380,20 @@ for f in ['sheet1','sheet2','sheet3','sheet4']:
 All 30 findings from `ENGINEERING_REVIEW.md` are resolved.
 
 ```
-tests/test_p0_regressions.py    17 tests  — P0 critical fixes validated
-tests/test_p1_regressions.py    11 tests  — P1 high-priority fixes validated
-tests/test_p2_p3_regressions.py 21 tests  — P2/P3 fixes validated
+tests/test_p0_regressions.py       17 tests  — P0 critical fixes validated
+tests/test_p1_regressions.py       11 tests  — P1 high-priority fixes validated
+tests/test_p2_p3_regressions.py    21 tests  — P2/P3 fixes validated
+tests/test_scenario.py            188 tests  — scenario system + integration
+tests/test_ballistic_projection.py 33 tests  — ballistic projection + drag
+tests/test_ux_review.py            53 tests  — UX survey review implementations
+tests/test_ui_playwright.py       229 tests  — DOM-based UI tests (headless Chromium)
+tests/test_visual_playwright.py    61 tests  — visual regression tests (headless Chromium)
+tests/test_isolation.py             3 tests  — meta-test for order independence
 ─────────────────────────────────────────────────────
-Total                           49 tests  ALL PASSING
+Total                             616 collected  (323 pass, 293 require browser)
 ```
 
-**Before making any change**: run the full suite and confirm 49/49 green.
+**Before making any change**: run `python -m pytest tests/ -v` and confirm green.
 **When adding a feature or fixing a bug**: write the test first (red), then fix (green).
 
 The engineering review describes _why_ each fix was made, not just what changed.
@@ -419,3 +443,29 @@ flight-path angle from horizontal in degrees, or `None` for free gravity turn.
 
 **Test naming**: follow the `test_pNNN_description` pattern so the review
 finding is traceable from the test name.
+
+**CHANGELOG**: Update `CHANGELOG.md` (project root) before merging any feature
+branch. Add entries under `[Unreleased]` in the appropriate section (Added,
+Changed, Fixed). The CHANGELOG is a required part of every merge.
+
+---
+
+## Scenario system
+
+The scenario system enables what-if analysis: load different vehicle configs
+and pitch programs through the web UI or CLI, replay through the full pipeline.
+
+```
+LaunchScenario (scenario.py) → VehicleConfig + pitch program
+  → run_ascent() → trajectory points
+    → ScriptedTelemetry (telemachus_client.py) — drop-in replacement
+      → broadcast_loop reads get_state() (unchanged)
+        → FlightDirector.update() (unchanged)
+          → Socket.IO → Web UI
+```
+
+Key files: `mission_control/scenario.py` (presets + dataclass),
+`telemachus_client.py` (`ScriptedTelemetry` class), `server.py`
+(`/api/scenario/*` routes + `MissionSession`).
+
+All mutable server state lives in `MissionSession` (`server.py:session`).
