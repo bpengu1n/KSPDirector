@@ -20,6 +20,7 @@ Exports:
 from __future__ import annotations
 
 import math
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
@@ -493,7 +494,7 @@ class FlightDirector:
         """Reset all mutable state for scenario replay."""
         self._phase = FlightPhase.PRELAUNCH
         self._fuel_at_core_sep = None
-        self._prev_apo_km = None
+        self._apo_history: deque[tuple[float, float]] = deque(maxlen=50)
         self._prev_lf = None
         self._prev_met = None
         self._burn_rate = 0.0
@@ -520,11 +521,16 @@ class FlightDirector:
 
         gates = assess_gates(state, phase, self._fuel_at_core_sep,
                              has_boosters=self._has_boosters)
-        advisory = generate_advisory(state, phase, nominal_at_alt,
-                                     prev_apo_km=self._prev_apo_km)
 
-        # Update prev_apo for next cycle
-        self._prev_apo_km = (state.get("apoapsis") or 0) / 1000.0
+        current_apo_km = (state.get("apoapsis") or 0) / 1000.0
+        self._apo_history.append((met, current_apo_km))
+        prev_apo_for_stall = None
+        for t_hist, apo_hist in self._apo_history:
+            if met - t_hist >= 5.0:
+                prev_apo_for_stall = apo_hist
+
+        advisory = generate_advisory(state, phase, nominal_at_alt,
+                                     prev_apo_km=prev_apo_for_stall)
 
         # Consumables trending (UX P3-11 / FC-01)
         lf = state.get("liquid_fuel") or 0

@@ -143,6 +143,62 @@ def test_p208_stalled_apo_warns(prev_apo, lf, label):
         f"{label}: got '{adv.level}'")
 
 
+def test_p208_noisy_rising_apo_no_warning():
+    """FlightDirector should not fire stall warning when apoapsis is rising
+    but noisy telemetry causes per-update jitter (the bug that caused WARNING
+    spam in the mission event log)."""
+    from mission_control.nominal_compare import NominalTrajectory, FlightDirector
+    nominal = NominalTrajectory.load()
+    fd = FlightDirector(nominal)
+
+    base_apo_km = 35.0
+    warnings = 0
+    for i in range(60):
+        met = 70.0 + i * 0.2
+        apo_km = base_apo_km + i * 0.07
+        noise = 0.8 * (1 if i % 2 == 0 else -1)
+        state = {
+            'altitude': 20_000.0,
+            'apoapsis': (apo_km + noise) * 1000,
+            'periapsis': -400_000,
+            'mission_time': met,
+            'solid_fuel': 0, 'liquid_fuel': 200.0,
+            'throttle': 1.0, 'pitch': 45.0, 'velocity': 900.0,
+            'v_vert': 200.0,
+        }
+        result = fd.update(state)
+        if result['advisory']['level'] == 'WARNING' and 'STALLING' in result['advisory']['action']:
+            warnings += 1
+
+    assert warnings == 0, (
+        f"Got {warnings} stall warnings on a rising apoapsis — noise filtering broken")
+
+
+def test_p208_genuine_stall_still_warns():
+    """FlightDirector correctly fires stall warning when apoapsis is truly
+    flat over the lookback window."""
+    from mission_control.nominal_compare import NominalTrajectory, FlightDirector
+    nominal = NominalTrajectory.load()
+    fd = FlightDirector(nominal)
+
+    for i in range(40):
+        met = 70.0 + i * 0.2
+        state = {
+            'altitude': 20_000.0,
+            'apoapsis': 38_000.0,
+            'periapsis': -400_000,
+            'mission_time': met,
+            'solid_fuel': 0, 'liquid_fuel': 200.0,
+            'throttle': 1.0, 'pitch': 45.0, 'velocity': 900.0,
+            'v_vert': 200.0,
+        }
+        result = fd.update(state)
+
+    assert result['advisory']['level'] == 'WARNING', (
+        f"Expected WARNING for genuinely stalled apo, got '{result['advisory']['level']}'")
+    assert 'STALLING' in result['advisory']['action']
+
+
 # ---------------------------------------------------------------------------
 # P3-01  Advisory wording ambiguous for flight controllers
 # ---------------------------------------------------------------------------
