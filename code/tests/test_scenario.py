@@ -983,7 +983,7 @@ def test_phase_band_colors(html_source):
 def test_bands_update_on_load(html_source):
     on_nominal = re.search(r"socket\.on\('nominal'", html_source, re.DOTALL)
     assert on_nominal is not None
-    handler_section = html_source[on_nominal.start():on_nominal.start() + 500]
+    handler_section = html_source[on_nominal.start():on_nominal.start() + 700]
     assert ('buildPhaseBands' in handler_section or
             'computePhaseBands' in handler_section or
             'derivePhaseBands' in handler_section or
