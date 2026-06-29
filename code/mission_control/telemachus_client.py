@@ -313,9 +313,187 @@ class TelematicusClient:
 
 import random as _random
 
+# Kerbin constants (mirrored from sim.constants to avoid import dependency issues)
+_MU = 3.5316e12
+_R  = 600_000.0
+_ATM_CEIL = 70_000.0
+_G0 = 9.81
+
+
 def _lerp(a, b, f):
     """Linear interpolation between a and b by fraction f."""
     return a + (b - a) * f
+
+
+def _grav(h):
+    r = _R + h
+    return _MU / (r * r)
+
+
+def _orbital_params(h, v, gamma):
+    """Returns (apo_m, pe_m) above surface."""
+    r = _R + h
+    energy = 0.5 * v * v - _MU / r
+    if energy >= 0:
+        return float("inf"), float("-inf")
+    a = -_MU / (2.0 * energy)
+    h_mom = r * v * _math.cos(gamma)
+    ecc_sq = 1.0 - (h_mom * h_mom) / (_MU * a)
+    ecc = _math.sqrt(max(0.0, ecc_sq))
+    apo = a * (1.0 + ecc) - _R
+    per = a * (1.0 - ecc) - _R
+    return apo, per
+
+
+def _propagate_coast(h0, v0, gamma0, dr0, duration, dt=0.5, sample_dt=2.0):
+    """Propagate a ballistic (no thrust) trajectory using 2D gravity-turn equations.
+
+    Returns list of keyframe dicts at sample_dt intervals.
+    """
+    h, v, gamma, dr = h0, v0, gamma0, dr0
+    t = 0.0
+    last_sample = -sample_dt
+    kf = []
+
+    while t <= duration + dt * 0.5:
+        if t - last_sample >= sample_dt - dt * 0.01 or t == 0.0:
+            apo, per = _orbital_params(h, v, gamma)
+            v_h = v * _math.cos(gamma)
+            v_v = v * _math.sin(gamma)
+            kf.append({
+                "altitude": h, "velocity": v, "v_vert": v_v, "v_horiz": v_h,
+                "apoapsis": apo, "periapsis": per,
+                "pitch": _math.degrees(gamma), "heading": 90.0,
+                "roll": 0.0, "throttle": 0.0, "liquid_fuel": 0, "solid_fuel": 0,
+                "phase": "COAST", "downrange": dr, "_dt": t,
+            })
+            last_sample = t
+
+        g = _grav(h)
+        r = _R + h
+        dv = -g * _math.sin(gamma)
+        dgamma = _math.cos(gamma) * (v / r - g / v) if v > 1.0 else 0.0
+        dh = v * _math.sin(gamma)
+        ddr = v * _math.cos(gamma)
+
+        v += dv * dt
+        gamma += dgamma * dt
+        h += dh * dt
+        dr += ddr * dt
+        t += dt
+
+        if h <= 0:
+            h = 0
+            break
+
+    return kf
+
+
+def _propagate_thrust(h0, v0, gamma0, dr0, mass0_kg, thrust_vac_n, isp_vac,
+                      duration, prop_mass_kg=None,
+                      target_apo_m=None, target_pe_m=None,
+                      target_alt_m=None, dt=0.5, sample_dt=5.0,
+                      phase="TERRIER", lf_start=360):
+    """Propagate a powered trajectory with prograde-biased steering.
+
+    When target_alt_m is set, adds a pitch-up bias to the gravity-turn that
+    smoothly decreases as orbital velocity is approached — mimicking how a KSP
+    player steers above prograde to climb from low suborbital to target orbit.
+    Cuts thrust when propellant runs out.
+    Returns list of keyframe dicts at sample_dt intervals.
+    """
+    h, v, gamma, dr = h0, v0, gamma0, dr0
+    mass = mass0_kg
+    mdot = thrust_vac_n / (isp_vac * _G0)
+    if prop_mass_kg is not None:
+        prop_total = prop_mass_kg
+    else:
+        prop_total = mass0_kg * 0.64
+    prop_remaining = prop_total
+    t = 0.0
+    last_sample = -sample_dt
+    kf = []
+
+    v_target = _math.sqrt(_MU / (_R + (target_alt_m or 80_000)))
+
+    while t <= duration + dt * 0.5:
+        thrusting = prop_remaining > 0.1
+        throttle = 1.0 if thrusting else 0.0
+
+        if t - last_sample >= sample_dt - dt * 0.01 or t == 0.0:
+            apo, per = _orbital_params(h, v, gamma)
+            v_h = v * _math.cos(gamma)
+            v_v = v * _math.sin(gamma)
+            fuel_frac = max(0, prop_remaining / prop_total) if prop_total > 0 else 0
+            kf.append({
+                "altitude": h, "velocity": v, "v_vert": v_v, "v_horiz": v_h,
+                "apoapsis": apo, "periapsis": per,
+                "pitch": _math.degrees(gamma), "heading": 90.0,
+                "roll": 0.0, "throttle": throttle,
+                "liquid_fuel": max(0, lf_start * fuel_frac),
+                "solid_fuel": 0,
+                "phase": phase, "downrange": dr, "_dt": t,
+            })
+            last_sample = t
+
+        if target_apo_m is not None and target_pe_m is not None:
+            apo_now, pe_now = _orbital_params(h, v, gamma)
+            if apo_now >= target_apo_m * 0.95 and pe_now >= target_pe_m:
+                apo, per = _orbital_params(h, v, gamma)
+                v_h = v * _math.cos(gamma)
+                v_v = v * _math.sin(gamma)
+                fuel_frac = max(0, prop_remaining / prop_total) if prop_total > 0 else 0
+                kf.append({
+                    "altitude": h, "velocity": v, "v_vert": v_v, "v_horiz": v_h,
+                    "apoapsis": apo, "periapsis": per,
+                    "pitch": _math.degrees(gamma), "heading": 90.0,
+                    "roll": 0.0, "throttle": 0.0,
+                    "liquid_fuel": max(0, lf_start * fuel_frac),
+                    "solid_fuel": 0,
+                    "phase": "ORBIT", "downrange": dr, "_dt": t,
+                })
+                break
+
+        g = _grav(h)
+        r = _R + h
+        accel = (thrust_vac_n / mass) if thrusting else 0.0
+
+        dgamma_gt = _math.cos(gamma) * (v / r - g / v) if v > 1.0 else 0.0
+
+        if target_alt_m is not None and thrusting:
+            apo_now, _ = _orbital_params(h, v, gamma)
+            if apo_now < target_alt_m:
+                climb_ang = min(20.0, max(5.0, (target_alt_m - h) / 4000.0))
+                gamma_target = _math.radians(climb_ang)
+            else:
+                alt_err = target_alt_m - h
+                gamma_target = _math.radians(max(-2.0, min(5.0, alt_err / 10000.0)))
+            error = gamma_target - gamma
+            steer_rate = max(-0.04, min(0.04, error * 1.0))
+            dgamma = steer_rate
+        else:
+            dgamma = dgamma_gt
+
+        dv = accel - g * _math.sin(gamma)
+        dh = v * _math.sin(gamma)
+        ddr = v * _math.cos(gamma)
+
+        v += dv * dt
+        gamma += dgamma * dt
+        h += dh * dt
+        dr += ddr * dt
+
+        if thrusting:
+            dm = mdot * dt
+            mass -= dm
+            prop_remaining -= dm
+        t += dt
+
+        if h <= 0:
+            h = 0
+            break
+
+    return kf
 
 
 def _build_ascent_keyframes(nom_pts, noise_pct=0.02, pitch_bias=0.0,
@@ -372,114 +550,139 @@ def _interp_keyframes(keyframes, t):
     return dict(keyframes[-1])
 
 
+def _burnout_state(kf_list):
+    """Extract burnout state from the last ascent keyframe."""
+    last = kf_list[-1]
+    gamma = _math.radians(last["pitch"])
+    return (last["altitude"], last["velocity"], gamma,
+            last["downrange"], last["t"])
+
+
+def _stamp_time(keyframes, t0):
+    """Set absolute 't' on propagated keyframes using their relative '_dt'."""
+    for k in keyframes:
+        k["t"] = t0 + k.pop("_dt")
+    return keyframes
+
+
+def _coast_to_apoapsis(h0, v0, gamma0, dr0, margin_s=2.0):
+    """Coast until near apoapsis (v_vert crosses zero), return keyframes."""
+    kf = _propagate_coast(h0, v0, gamma0, dr0, duration=300.0,
+                          dt=0.25, sample_dt=2.0)
+    # Find apoapsis: where v_vert first goes negative
+    for i, k in enumerate(kf):
+        if k["v_vert"] < 0 and k["_dt"] > 5.0:
+            # Back up by margin_s to catch just before apoapsis
+            cut_dt = max(5.0, k["_dt"] - margin_s)
+            return [x for x in kf if x["_dt"] <= cut_dt]
+    return kf
+
+
 def _scenario_nominal(nom_pts):
     """Nominal: full orbit insertion. Boost → Core → Coast → Terrier → Orbit."""
     kf = _build_ascent_keyframes(nom_pts)
-    last = kf[-1]
-    t0 = last["t"]
-    # Coast phase: T+61 to T+130 (coast to apoapsis ~24.6 km)
-    coast_kf = [
-        {"t": t0 + 1, "altitude": 15200, "velocity": 640, "v_vert": 380, "v_horiz": 510,
-         "apoapsis": 24600, "periapsis": -587000, "pitch": 37.0, "heading": 90.0,
-         "roll": 0.3, "throttle": 0.0, "liquid_fuel": 0, "solid_fuel": 0,
-         "phase": "COAST", "downrange": 9000},
-        {"t": t0 + 30, "altitude": 22000, "velocity": 580, "v_vert": 120, "v_horiz": 565,
-         "apoapsis": 24600, "periapsis": -587000, "pitch": 12.0, "heading": 90.0,
-         "roll": 0.1, "throttle": 0.0, "liquid_fuel": 0, "solid_fuel": 0,
-         "phase": "COAST", "downrange": 24000},
-        {"t": t0 + 55, "altitude": 24500, "velocity": 560, "v_vert": 10, "v_horiz": 560,
-         "apoapsis": 24700, "periapsis": -587000, "pitch": 1.0, "heading": 90.0,
-         "roll": 0.0, "throttle": 0.0, "liquid_fuel": 0, "solid_fuel": 0,
-         "phase": "COAST", "downrange": 40000},
-    ]
-    # Terrier ignition at apoapsis (~T+120), burn to orbit
-    # Terrier Isp_vac=345s, thrust=60kN, mission stage ~6.3t
-    # LF remaining: mission stage has FL-T800 = 360 units
-    terrier_kf = [
-        {"t": t0 + 60, "altitude": 24400, "velocity": 560, "v_vert": -5, "v_horiz": 560,
-         "apoapsis": 24600, "periapsis": -587000, "pitch": 0.0, "heading": 90.0,
-         "roll": 0.0, "throttle": 1.0, "liquid_fuel": 360, "solid_fuel": 0,
-         "phase": "TERRIER", "downrange": 42000},
-        {"t": t0 + 100, "altitude": 30000, "velocity": 900, "v_vert": 30, "v_horiz": 900,
-         "apoapsis": 45000, "periapsis": -200000, "pitch": 2.0, "heading": 90.0,
-         "roll": 0.1, "throttle": 1.0, "liquid_fuel": 280, "solid_fuel": 0,
-         "phase": "TERRIER", "downrange": 70000},
-        {"t": t0 + 150, "altitude": 55000, "velocity": 1400, "v_vert": 40, "v_horiz": 1400,
-         "apoapsis": 68000, "periapsis": 10000, "pitch": 1.5, "heading": 90.0,
-         "roll": 0.0, "throttle": 1.0, "liquid_fuel": 180, "solid_fuel": 0,
-         "phase": "TERRIER", "downrange": 120000},
-        {"t": t0 + 200, "altitude": 75000, "velocity": 1900, "v_vert": 15, "v_horiz": 1900,
-         "apoapsis": 80000, "periapsis": 55000, "pitch": 0.5, "heading": 90.0,
-         "roll": 0.0, "throttle": 1.0, "liquid_fuel": 90, "solid_fuel": 0,
-         "phase": "TERRIER", "downrange": 200000},
-        {"t": t0 + 240, "altitude": 79800, "velocity": 2270, "v_vert": 2, "v_horiz": 2270,
-         "apoapsis": 80200, "periapsis": 79500, "pitch": 0.1, "heading": 90.0,
-         "roll": 0.0, "throttle": 0.0, "liquid_fuel": 30, "solid_fuel": 0,
-         "phase": "ORBIT", "downrange": 300000},
-    ]
-    # Stable orbit hold
-    orbit_kf = [
-        {"t": t0 + 260, "altitude": 80000, "velocity": 2279, "v_vert": 0, "v_horiz": 2279,
-         "apoapsis": 80200, "periapsis": 79800, "pitch": 0.0, "heading": 90.0,
-         "roll": 0.0, "throttle": 0.0, "liquid_fuel": 28, "solid_fuel": 0,
-         "phase": "ORBIT", "downrange": 340000},
-        {"t": t0 + 300, "altitude": 80000, "velocity": 2279, "v_vert": 0, "v_horiz": 2279,
-         "apoapsis": 80100, "periapsis": 79900, "pitch": 0.0, "heading": 90.0,
-         "roll": 0.0, "throttle": 0.0, "liquid_fuel": 28, "solid_fuel": 0,
-         "phase": "ORBIT", "downrange": 400000},
-    ]
-    return kf + coast_kf + terrier_kf + orbit_kf, t0 + 300
+    h0, v0, gamma0, dr0, t0 = _burnout_state(kf)
+
+    coast_kf = _coast_to_apoapsis(h0, v0, gamma0, dr0)
+    _stamp_time(coast_kf, t0)
+
+    # Terrier ignition after coast (at/near apoapsis)
+    c_last = coast_kf[-1]
+    th0 = c_last["altitude"]
+    tv0 = c_last["velocity"]
+    tg0 = _math.radians(c_last["pitch"])
+    tdr0 = c_last["downrange"]
+    tt0 = c_last["t"]
+
+    # Mission stage: 6.25t wet (2.25t dry + 4.0t FL-T800 propellant)
+    mission_mass_kg = 6250.0
+    terrier_thrust_n = 60_000.0
+    terrier_isp = 345.0
+    fl_t800_prop_kg = 4000.0
+
+    terrier_kf = _propagate_thrust(
+        th0, tv0, tg0, tdr0, mission_mass_kg, terrier_thrust_n, terrier_isp,
+        duration=250.0, prop_mass_kg=fl_t800_prop_kg,
+        target_apo_m=80_000, target_pe_m=50_000,
+        target_alt_m=80_000, dt=0.25, sample_dt=5.0,
+        phase="TERRIER", lf_start=360)
+    _stamp_time(terrier_kf, tt0)
+
+    # Orbit coast — propagate from Terrier cutoff state
+    orb_last = terrier_kf[-1]
+    orb_t0 = orb_last["t"]
+    orb_h = orb_last["altitude"]
+    orb_v = orb_last["velocity"]
+    orb_gamma = _math.radians(orb_last["pitch"])
+    orb_dr = orb_last["downrange"]
+    orb_lf = orb_last.get("liquid_fuel", 28)
+
+    orbit_coast = _propagate_coast(orb_h, orb_v, orb_gamma, orb_dr,
+                                   duration=60.0, dt=0.5, sample_dt=10.0)
+    _stamp_time(orbit_coast, orb_t0)
+    for oc in orbit_coast:
+        oc["phase"] = "ORBIT"
+        oc["liquid_fuel"] = orb_lf
+    orbit_kf = orbit_coast
+
+    total_dur = orbit_kf[-1]["t"]
+    return kf + coast_kf + terrier_kf + orbit_kf, total_dur
 
 
 def _scenario_subnominal(nom_pts):
-    """Sub-nominal: degraded performance, still achieves orbit."""
+    """Sub-nominal: degraded performance, still achieves orbit but eccentric."""
     kf = _build_ascent_keyframes(nom_pts, noise_pct=0.03, pitch_bias=-3.0)
-    last = kf[-1]
-    t0 = last["t"]
-    # Slightly worse burnout: lower apoapsis, needs more Terrier work
-    ext_kf = [
-        {"t": t0 + 1, "altitude": 14000, "velocity": 600, "v_vert": 340, "v_horiz": 480,
-         "apoapsis": 20000, "periapsis": -600000, "pitch": 35.0, "heading": 90.0,
-         "roll": 1.5, "throttle": 0.0, "liquid_fuel": 0, "solid_fuel": 0,
-         "phase": "COAST", "downrange": 8000},
-        {"t": t0 + 40, "altitude": 19500, "velocity": 530, "v_vert": 60, "v_horiz": 527,
-         "apoapsis": 20200, "periapsis": -600000, "pitch": 6.5, "heading": 90.0,
-         "roll": 0.5, "throttle": 0.0, "liquid_fuel": 0, "solid_fuel": 0,
-         "phase": "COAST", "downrange": 28000},
-        # Terrier ignition (earlier, lower)
-        {"t": t0 + 50, "altitude": 19800, "velocity": 530, "v_vert": -10, "v_horiz": 530,
-         "apoapsis": 20000, "periapsis": -600000, "pitch": -1.0, "heading": 90.0,
-         "roll": 0.0, "throttle": 1.0, "liquid_fuel": 360, "solid_fuel": 0,
-         "phase": "TERRIER", "downrange": 33000},
-        {"t": t0 + 120, "altitude": 35000, "velocity": 1000, "v_vert": 50, "v_horiz": 1000,
-         "apoapsis": 50000, "periapsis": -100000, "pitch": 3.0, "heading": 90.0,
-         "roll": 0.2, "throttle": 1.0, "liquid_fuel": 230, "solid_fuel": 0,
-         "phase": "TERRIER", "downrange": 80000},
-        {"t": t0 + 200, "altitude": 65000, "velocity": 1700, "v_vert": 25, "v_horiz": 1700,
-         "apoapsis": 75000, "periapsis": 30000, "pitch": 0.8, "heading": 90.0,
-         "roll": 0.0, "throttle": 1.0, "liquid_fuel": 100, "solid_fuel": 0,
-         "phase": "TERRIER", "downrange": 170000},
-        # Achieves orbit but eccentric
-        {"t": t0 + 260, "altitude": 76000, "velocity": 2250, "v_vert": 3, "v_horiz": 2250,
-         "apoapsis": 78000, "periapsis": 72000, "pitch": 0.1, "heading": 90.0,
-         "roll": 0.0, "throttle": 0.0, "liquid_fuel": 8, "solid_fuel": 0,
-         "phase": "ORBIT", "downrange": 280000},
-        {"t": t0 + 310, "altitude": 75500, "velocity": 2255, "v_vert": -1, "v_horiz": 2255,
-         "apoapsis": 78000, "periapsis": 72000, "pitch": 0.0, "heading": 90.0,
-         "roll": 0.0, "throttle": 0.0, "liquid_fuel": 8, "solid_fuel": 0,
-         "phase": "ORBIT", "downrange": 350000},
-    ]
-    return kf + ext_kf, t0 + 310
+    h0, v0, gamma0, dr0, t0 = _burnout_state(kf)
+
+    # Degrade burnout state: 7% less velocity, steeper gamma
+    v0 *= 0.93
+    gamma0 = _math.radians(45.0)
+
+    coast_kf = _coast_to_apoapsis(h0, v0, gamma0, dr0)
+    _stamp_time(coast_kf, t0)
+
+    c_last = coast_kf[-1]
+    th0, tv0 = c_last["altitude"], c_last["velocity"]
+    tg0 = _math.radians(c_last["pitch"])
+    tdr0, tt0 = c_last["downrange"], c_last["t"]
+
+    mission_mass_kg = 6250.0
+    terrier_kf = _propagate_thrust(
+        th0, tv0, tg0, tdr0, mission_mass_kg, 60_000.0, 345.0,
+        duration=280.0, prop_mass_kg=4000.0,
+        target_apo_m=78_000, target_pe_m=35_000,
+        target_alt_m=78_000, dt=0.25, sample_dt=5.0,
+        phase="TERRIER", lf_start=360)
+    _stamp_time(terrier_kf, tt0)
+
+    orb_last = terrier_kf[-1]
+    orb_t0 = orb_last["t"]
+    orb_h = orb_last["altitude"]
+    orb_v = orb_last["velocity"]
+    orb_gamma = _math.radians(orb_last["pitch"])
+    orb_dr = orb_last["downrange"]
+    orb_lf = orb_last.get("liquid_fuel", 8)
+
+    orbit_coast = _propagate_coast(orb_h, orb_v, orb_gamma, orb_dr,
+                                   duration=60.0, dt=0.5, sample_dt=10.0)
+    _stamp_time(orbit_coast, orb_t0)
+    for oc in orbit_coast:
+        oc["phase"] = "ORBIT"
+        oc["liquid_fuel"] = orb_lf
+    orbit_kf = orbit_coast
+
+    total_dur = orbit_kf[-1]["t"]
+    return kf + coast_kf + terrier_kf + orbit_kf, total_dur
 
 
 def _scenario_abort(nom_pts):
     """Engine failure at T+42s, successful abort and capsule recovery."""
     kf = _build_ascent_keyframes(nom_pts)
-    # Truncate at T+42s (core phase, Swivel failure)
     kf = [k for k in kf if k["t"] <= 42.0]
     last = kf[-1] if kf else kf[0]
-    # Swivel fails — thrust drops, vehicle starts tumbling
-    abort_kf = [
+
+    # Brief engine failure transition (hand-crafted, 4s event)
+    abort_start = [
         {"t": 42.5, "altitude": last["altitude"], "velocity": last["velocity"] * 0.98,
          "v_vert": last["v_vert"] * 0.95, "v_horiz": last["v_horiz"],
          "apoapsis": last["apoapsis"], "periapsis": last["periapsis"],
@@ -492,61 +695,79 @@ def _scenario_abort(nom_pts):
          "pitch": last["pitch"] - 15, "heading": 85.0, "roll": 25.0,
          "throttle": 0.0, "liquid_fuel": 195, "solid_fuel": 0,
          "phase": "ABORT", "downrange": last["downrange"] + 500},
-        # Abort separation — capsule separates, LES fires
-        {"t": 46.0, "altitude": last["altitude"] + 500, "velocity": 350,
-         "v_vert": 200, "v_horiz": 270,
-         "apoapsis": last["apoapsis"] * 0.6, "periapsis": -630000,
-         "pitch": 40.0, "heading": 88.0, "roll": 5.0,
-         "throttle": 0.0, "liquid_fuel": 0, "solid_fuel": 0,
-         "phase": "ABORT", "downrange": last["downrange"] + 1000},
-        # Ballistic arc — capsule coasting up then down
-        {"t": 60.0, "altitude": last["altitude"] + 2000, "velocity": 280,
-         "v_vert": 100, "v_horiz": 260,
-         "apoapsis": last["apoapsis"] * 0.5, "periapsis": -640000,
-         "pitch": 21.0, "heading": 89.0, "roll": 2.0,
-         "throttle": 0.0, "liquid_fuel": 0, "solid_fuel": 0,
-         "phase": "ABORT", "downrange": last["downrange"] + 5000},
-        {"t": 80.0, "altitude": last["altitude"], "velocity": 250,
-         "v_vert": -30, "v_horiz": 245,
-         "apoapsis": last["apoapsis"] * 0.4, "periapsis": -640000,
-         "pitch": -7.0, "heading": 89.5, "roll": 1.0,
-         "throttle": 0.0, "liquid_fuel": 0, "solid_fuel": 0,
-         "phase": "ABORT", "downrange": last["downrange"] + 12000},
-        {"t": 110.0, "altitude": 6000, "velocity": 220,
-         "v_vert": -120, "v_horiz": 180,
+    ]
+
+    # Capsule separates at T+46 with reduced velocity
+    sep_v = last["velocity"] * 0.55
+    sep_gamma = _math.radians(36.0)
+    sep_alt = last["altitude"] + 500
+    sep_dr = last["downrange"] + 1000
+
+    abort_start.append({
+        "t": 46.0, "altitude": sep_alt, "velocity": sep_v,
+        "v_vert": sep_v * _math.sin(sep_gamma),
+        "v_horiz": sep_v * _math.cos(sep_gamma),
+        "apoapsis": last["apoapsis"] * 0.6, "periapsis": -630000,
+        "pitch": _math.degrees(sep_gamma), "heading": 88.0, "roll": 5.0,
+        "throttle": 0.0, "liquid_fuel": 0, "solid_fuel": 0,
+        "phase": "ABORT", "downrange": sep_dr,
+    })
+
+    # Physics-propagated ballistic coast of the capsule
+    coast_kf = _propagate_coast(sep_alt, sep_v, sep_gamma, sep_dr,
+                                duration=120.0, dt=0.25, sample_dt=3.0)
+    _stamp_time(coast_kf, 46.0)
+    for ck in coast_kf:
+        ck["phase"] = "ABORT"
+
+    # Find where capsule drops below 5km for chute deploy
+    chute_idx = len(coast_kf)
+    for i, ck in enumerate(coast_kf):
+        if ck["altitude"] <= 5000 and ck["v_vert"] < 0:
+            chute_idx = i
+            break
+
+    abort_coast = coast_kf[:chute_idx]
+
+    # Chute and landing from wherever we are
+    if chute_idx < len(coast_kf):
+        chute_pt = coast_kf[chute_idx]
+    else:
+        chute_pt = coast_kf[-1]
+
+    chute_t = chute_pt["t"]
+    chute_dr = chute_pt["downrange"]
+    chute_kf = [
+        {"t": chute_t, "altitude": chute_pt["altitude"],
+         "velocity": chute_pt["velocity"],
+         "v_vert": chute_pt["v_vert"], "v_horiz": chute_pt["v_horiz"],
          "apoapsis": 0, "periapsis": -640000,
-         "pitch": -33.0, "heading": 89.5, "roll": 0.5,
+         "pitch": _math.degrees(_math.atan2(chute_pt["v_vert"], max(1, chute_pt["v_horiz"]))),
+         "heading": 89.5, "roll": 0.0,
          "throttle": 0.0, "liquid_fuel": 0, "solid_fuel": 0,
-         "phase": "ABORT", "downrange": last["downrange"] + 22000},
-        # Parachute deploy at ~5 km
-        {"t": 120.0, "altitude": 4500, "velocity": 180,
-         "v_vert": -100, "v_horiz": 150,
-         "apoapsis": 0, "periapsis": -640000,
-         "pitch": -33.0, "heading": 89.5, "roll": 0.0,
-         "throttle": 0.0, "liquid_fuel": 0, "solid_fuel": 0,
-         "phase": "CHUTE", "downrange": last["downrange"] + 25000},
-        # Under chute — slow descent
-        {"t": 140.0, "altitude": 2500, "velocity": 12,
+         "phase": "CHUTE", "downrange": chute_dr},
+        {"t": chute_t + 15, "altitude": 2500, "velocity": 12,
          "v_vert": -8, "v_horiz": 9,
          "apoapsis": 0, "periapsis": -640000,
          "pitch": -50.0, "heading": 90.0, "roll": 0.0,
          "throttle": 0.0, "liquid_fuel": 0, "solid_fuel": 0,
-         "phase": "CHUTE", "downrange": last["downrange"] + 26000},
-        {"t": 170.0, "altitude": 200, "velocity": 8,
+         "phase": "CHUTE", "downrange": chute_dr + 200},
+        {"t": chute_t + 40, "altitude": 200, "velocity": 8,
          "v_vert": -7, "v_horiz": 3,
          "apoapsis": 0, "periapsis": -640000,
          "pitch": -70.0, "heading": 90.0, "roll": 0.0,
          "throttle": 0.0, "liquid_fuel": 0, "solid_fuel": 0,
-         "phase": "CHUTE", "downrange": last["downrange"] + 26500},
-        # Splashdown
-        {"t": 180.0, "altitude": 0, "velocity": 6,
+         "phase": "CHUTE", "downrange": chute_dr + 300},
+        {"t": chute_t + 50, "altitude": 0, "velocity": 6,
          "v_vert": -6, "v_horiz": 1,
          "apoapsis": 0, "periapsis": 0,
          "pitch": -85.0, "heading": 90.0, "roll": 0.0,
          "throttle": 0.0, "liquid_fuel": 0, "solid_fuel": 0,
-         "phase": "LANDED", "downrange": last["downrange"] + 26600},
+         "phase": "LANDED", "downrange": chute_dr + 320},
     ]
-    return kf + abort_kf, 180.0
+
+    total_dur = chute_kf[-1]["t"]
+    return kf + abort_start + abort_coast + chute_kf, total_dur
 
 
 def _scenario_catastrophic(nom_pts):
@@ -554,8 +775,9 @@ def _scenario_catastrophic(nom_pts):
     kf = _build_ascent_keyframes(nom_pts)
     kf = [k for k in kf if k["t"] <= 15.0]
     last = kf[-1] if kf else kf[0]
-    # Max-Q structural failure — rapid tumble, breakup
-    fail_kf = [
+
+    # Breakup event (hand-crafted 3s transition)
+    fail_start = [
         {"t": 15.5, "altitude": last["altitude"], "velocity": last["velocity"] * 1.02,
          "v_vert": last["v_vert"], "v_horiz": last["v_horiz"],
          "apoapsis": last["apoapsis"], "periapsis": last["periapsis"],
@@ -568,33 +790,47 @@ def _scenario_catastrophic(nom_pts):
          "pitch": last["pitch"] + 45, "heading": 70.0, "roll": 120.0,
          "throttle": 0.0, "liquid_fuel": 280, "solid_fuel": 70,
          "phase": "ABORT", "downrange": last["downrange"] + 100},
-        {"t": 18.0, "altitude": last["altitude"] - 200, "velocity": last["velocity"] * 0.5,
-         "v_vert": -50, "v_horiz": last["v_horiz"] * 0.3,
-         "apoapsis": 0, "periapsis": -640000,
-         "pitch": -20.0, "heading": 45.0, "roll": -90.0,
-         "throttle": 0.0, "liquid_fuel": 260, "solid_fuel": 60,
-         "phase": "ABORT", "downrange": last["downrange"] + 200},
-        # Debris falling
-        {"t": 22.0, "altitude": last["altitude"] - 1500, "velocity": 180,
-         "v_vert": -150, "v_horiz": 100,
-         "apoapsis": 0, "periapsis": -640000,
-         "pitch": -56.0, "heading": 30.0, "roll": 45.0,
-         "throttle": 0.0, "liquid_fuel": 0, "solid_fuel": 0,
-         "phase": "LOV", "downrange": last["downrange"] + 500},
-        {"t": 30.0, "altitude": max(100, last["altitude"] - 4000), "velocity": 200,
-         "v_vert": -190, "v_horiz": 60,
-         "apoapsis": 0, "periapsis": -640000,
-         "pitch": -72.0, "heading": 20.0, "roll": 0.0,
-         "throttle": 0.0, "liquid_fuel": 0, "solid_fuel": 0,
-         "phase": "LOV", "downrange": last["downrange"] + 800},
-        {"t": 40.0, "altitude": 0, "velocity": 210,
-         "v_vert": -210, "v_horiz": 10,
-         "apoapsis": 0, "periapsis": 0,
-         "pitch": -89.0, "heading": 15.0, "roll": 0.0,
-         "throttle": 0.0, "liquid_fuel": 0, "solid_fuel": 0,
-         "phase": "LOV", "downrange": last["downrange"] + 900},
     ]
-    return kf + fail_kf, 40.0
+
+    # Debris state after breakup: mostly vertical energy lost, some horiz remains
+    debris_v = last["velocity"] * 0.4
+    debris_gamma = _math.radians(-15.0)
+    debris_alt = max(500, last["altitude"] - 200)
+    debris_dr = last["downrange"] + 200
+
+    # Physics-propagated debris ballistic fall
+    debris_coast = _propagate_coast(debris_alt, debris_v, debris_gamma, debris_dr,
+                                    duration=60.0, dt=0.25, sample_dt=2.0)
+    _stamp_time(debris_coast, 18.0)
+    for dk in debris_coast:
+        dk["phase"] = "LOV"
+        dk["liquid_fuel"] = 0
+        dk["solid_fuel"] = 0
+        dk["heading"] = max(15, 45 - (dk["t"] - 18.0))
+        dk["roll"] = max(0, 45 - (dk["t"] - 18.0) * 2)
+
+    # Truncate at ground impact
+    lov_kf = []
+    for dk in debris_coast:
+        lov_kf.append(dk)
+        if dk["altitude"] <= 0:
+            dk["altitude"] = 0
+            break
+
+    # Ensure we end at ground level
+    if lov_kf and lov_kf[-1]["altitude"] > 0:
+        final = dict(lov_kf[-1])
+        final["t"] = lov_kf[-1]["t"] + 2
+        final["altitude"] = 0
+        final["velocity"] = lov_kf[-1]["velocity"]
+        final["v_vert"] = -lov_kf[-1]["velocity"]
+        final["v_horiz"] = 10
+        final["pitch"] = -89.0
+        final["phase"] = "LOV"
+        lov_kf.append(final)
+
+    total_dur = lov_kf[-1]["t"] if lov_kf else 40.0
+    return kf + fail_start + lov_kf, total_dur
 
 
 SCENARIOS = {
